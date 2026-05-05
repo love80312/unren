@@ -303,7 +303,7 @@ func handleExtractRPA(game *detector.GameInfo, clean bool) {
 	}
 	defer r.Cleanup()
 
-	fmt.Println("  正從 RPA 壓縮檔提取中...")
+	fmt.Println("  正從 RPA 壓縮檔　提取中...")
 	fmt.Println()
 
 	totalErrors := 0
@@ -311,7 +311,7 @@ func handleExtractRPA(game *detector.GameInfo, clean bool) {
 	for _, rpaPath := range game.RPAFiles {
 		relPath, _ := filepath.Rel(game.GameDir, rpaPath)
 		info, _ := os.Stat(rpaPath)
-		fmt.Printf("    + 解包中 \"%s\" - %s\n", relPath, utils.FormatBytes(info.Size()))
+		fmt.Printf("    + 正在解包 『%s』 - %s\n", relPath, utils.FormatBytes(info.Size()))
 
 		if err := r.ExtractRPA(rpaPath); err != nil {
 			fmt.Printf("    ! 解包失敗 %s：%v\n", relPath, err)
