@@ -1,0 +1,10 @@
+# Binaries and build artifacts
+unren-go
+unren-go.exe
+dist/
+
+# OS/IDE metadata
+.DS_Store
+.vscode/
+.idea/
+*.log

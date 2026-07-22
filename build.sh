@@ -2,7 +2,7 @@
 # Cross-platform build script for UnRen-Go
 # Builds for Windows, Linux, macOS on x64/x86/ARM architectures
 
-VERSION="0.0.1"
+VERSION="0.0.6"
 OUTPUT_DIR="dist"
 BINARY_NAME="unren-go"
 

@@ -38,6 +38,17 @@ func NewRunner(gameInfo *detector.GameInfo) (*Runner, error) {
 	r.PythonLib = pythonLib
 	r.IsPython3 = isPy3
 
+	// Ensure Python executable is executable on Unix-like systems
+	if runtime.GOOS != "windows" && r.PythonExe != "" {
+		if info, err := os.Stat(r.PythonExe); err == nil {
+			if info.Mode()&0111 == 0 {
+				if err := os.Chmod(r.PythonExe, info.Mode()|0111); err != nil {
+					return nil, fmt.Errorf("failed to make Python executable: %w", err)
+				}
+			}
+		}
+	}
+
 	return r, nil
 }
 
