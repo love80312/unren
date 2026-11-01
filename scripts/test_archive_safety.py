@@ -26,7 +26,6 @@ rpa_fallback = load_module("unren_rpa_fallback_safety_test", "rpa.py")
 
 class DangerousPayload(object):
     def __reduce__(self):
-        # This would run if an unrestricted unpickler were used.
         return (eval, ("1 + 1",))
 
 
@@ -46,6 +45,52 @@ def make_rpa30(path, filename, data, malicious_index=None):
     with open(path, "wb") as archive:
         archive.write(header)
         archive.write(data)
+        archive.write(compressed)
+
+
+def make_rpa30_multiblock(path, filename, blocks):
+    """Build an RPA-3.0 entry from (virtual_prefix, stored_bytes) blocks."""
+    key = 0x12345678
+    header_placeholder = b"RPA-3.0 0000000000000000 00000000\n"
+    data_offset = len(header_placeholder)
+    payload = bytearray()
+    records = []
+    for prefix, data in blocks:
+        if not isinstance(prefix, bytes) or not isinstance(data, bytes):
+            raise TypeError("test blocks must contain bytes")
+        offset = data_offset + len(payload)
+        # RPA 3.0's dlen is the physical payload length; prefix is separate.
+        length = len(data)
+        records.append((offset ^ key, length ^ key, prefix))
+        payload.extend(data)
+    compressed = zlib.compress(pickle.dumps({filename: records}, protocol=2))
+    index_offset = data_offset + len(payload)
+    header = ("RPA-3.0 %016x %08x\n" % (index_offset, key)).encode("ascii")
+    if len(header) != len(header_placeholder):
+        raise AssertionError("test RPA header length changed unexpectedly")
+    with open(path, "wb") as archive:
+        archive.write(header)
+        archive.write(payload)
+        archive.write(compressed)
+
+
+def make_rpa30_two_tuple_blocks(path, filename, chunks):
+    """Build a fragmented RPA-3.0 entry using ordinary (offset, dlen) tuples."""
+    key = 0x12345678
+    header_placeholder = b"RPA-3.0 0000000000000000 00000000\n"
+    data_offset = len(header_placeholder)
+    payload = bytearray()
+    records = []
+    for data in chunks:
+        offset = data_offset + len(payload)
+        records.append((offset ^ key, len(data) ^ key))
+        payload.extend(data)
+    compressed = zlib.compress(pickle.dumps({filename: records}, protocol=2))
+    index_offset = data_offset + len(payload)
+    header = ("RPA-3.0 %016x %08x\n" % (index_offset, key)).encode("ascii")
+    with open(path, "wb") as archive:
+        archive.write(header)
+        archive.write(payload)
         archive.write(compressed)
 
 
@@ -71,8 +116,6 @@ def make_rpa_archive(path, version, filename, data):
     elif version == 3:
         header = ("RPA-3.0 %016x %08x\n" % (index_offset, key)).encode("ascii")
     else:
-        # The current rpatool parser uses metadata fields after the third token
-        # as XOR key components for RPA-3.2.
         header = ("RPA-3.2 %016x 00000000 %08x\n" % (index_offset, key)).encode("ascii")
     if len(header) != len(placeholder):
         raise AssertionError("test RPA header length changed unexpectedly")
@@ -117,14 +160,9 @@ class OutputPathSafetyTests(unittest.TestCase):
 
     def test_parent_traversal_and_absolute_paths_are_rejected(self):
         bad_paths = (
-            "../outside.txt",
-            "folder/../../outside.txt",
-            "/tmp/outside.txt",
-            "\\\\server\\share\\outside.txt",
-            "C:\\outside.txt",
-            "C:relative.txt",
-            "folder/.. /escape.txt",
-            "NUL.txt",
+            "../outside.txt", "folder/../../outside.txt", "/tmp/outside.txt",
+            "\\\\server\\share\\outside.txt", "C:\\outside.txt", "C:relative.txt",
+            "folder/.. /escape.txt", "NUL.txt",
         )
         for module in (rpatool, rpatool_py2, rpa_fallback):
             for name in bad_paths:
@@ -165,9 +203,7 @@ class ArchiveExtractionTests(unittest.TestCase):
             script = os.path.join(PYTHON_DIR, "rpatool.py")
             result = subprocess.run(
                 [sys.executable, "-O", script, "-x", archive_path, "-o", output_dir],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             with open(os.path.join(output_dir, "scripts", "hello.txt"), "rb") as stream:
@@ -183,13 +219,90 @@ class ArchiveExtractionTests(unittest.TestCase):
                 make_rpa_archive(archive_path, version, "script/data.txt", expected)
                 result = subprocess.run(
                     [sys.executable, "-O", script, "-x", archive_path, "-o", output_dir],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    universal_newlines=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 with open(os.path.join(output_dir, "script", "data.txt"), "rb") as stream:
                     self.assertEqual(stream.read(), expected)
+
+    def test_primary_extractor_joins_every_rpa30_block_and_prefix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = os.path.join(temp, "multi.rpa")
+            output_dir = os.path.join(temp, "out")
+            name = "scripts/multi.bin"
+            blocks = [(b"", b"first-"), (b"<middle>", b"second-"), (b"<tail>", b"last")]
+            expected = b"".join(prefix + data for prefix, data in blocks)
+            make_rpa30_multiblock(archive_path, name, blocks)
+
+            archive = rpatool.RenPyArchive(archive_path)
+            try:
+                self.assertEqual(archive.read(name), expected)
+            finally:
+                archive.close()
+
+            script = os.path.join(PYTHON_DIR, "rpatool.py")
+            result = subprocess.run(
+                [sys.executable, "-O", script, "-x", archive_path, "-o", output_dir],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(os.path.join(output_dir, "scripts", "multi.bin"), "rb") as stream:
+                self.assertEqual(stream.read(), expected)
+
+    def test_primary_extractor_joins_multiple_two_tuple_blocks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = os.path.join(temp, "two-tuples.rpa")
+            output_dir = os.path.join(temp, "out")
+            name = "scripts/two-tuples.bin"
+            chunks = [b"part-one", b"-part-two", b"-part-three"]
+            expected = b"".join(chunks)
+            make_rpa30_two_tuple_blocks(archive_path, name, chunks)
+
+            script = os.path.join(PYTHON_DIR, "rpatool.py")
+            result = subprocess.run(
+                [sys.executable, "-O", script, "-x", archive_path, "-o", output_dir],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(os.path.join(output_dir, "scripts", "two-tuples.bin"), "rb") as stream:
+                self.assertEqual(stream.read(), expected)
+
+    def test_fallback_extractor_joins_every_rpa30_block_and_prefix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = os.path.join(temp, "multi.rpa")
+            output_dir = os.path.join(temp, "out")
+            os.makedirs(output_dir)
+            name = "scripts/multi.bin"
+            blocks = [(b"", b"first-"), (b"<middle>", b"second-"), (b"<tail>", b"last")]
+            expected = b"".join(prefix + data for prefix, data in blocks)
+            make_rpa30_multiblock(archive_path, name, blocks)
+
+            fallback_script = os.path.join(PYTHON_DIR, "rpa.py")
+            result = subprocess.run(
+                [sys.executable, fallback_script, archive_path], cwd=output_dir,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(os.path.join(output_dir, "scripts", "multi.bin"), "rb") as stream:
+                self.assertEqual(stream.read(), expected)
+
+    def test_rpa_prefix_at_archive_end_is_validated_by_stored_length(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = os.path.join(temp, "prefix-at-end.rpa")
+            output_dir = os.path.join(temp, "out")
+            name = "scripts/end.bin"
+            blocks = [(b"start:", b"body"), (b"a-long-virtual-prefix:", b"end")]
+            expected = b"".join(prefix + data for prefix, data in blocks)
+            make_rpa30_multiblock(archive_path, name, blocks)
+
+            script = os.path.join(PYTHON_DIR, "rpatool.py")
+            result = subprocess.run(
+                [sys.executable, "-O", script, "-x", archive_path, "-o", output_dir],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(os.path.join(output_dir, "scripts", "end.bin"), "rb") as stream:
+                self.assertEqual(stream.read(), expected)
 
     def test_fallback_extracts_valid_rpa30(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -200,11 +313,8 @@ class ArchiveExtractionTests(unittest.TestCase):
             make_rpa_archive(archive_path, 3, "folder/fallback.txt", expected)
             fallback_script = os.path.join(PYTHON_DIR, "rpa.py")
             result = subprocess.run(
-                [sys.executable, fallback_script, archive_path],
-                cwd=output_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
+                [sys.executable, fallback_script, archive_path], cwd=output_dir,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             with open(os.path.join(output_dir, "folder", "fallback.txt"), "rb") as stream:
@@ -231,9 +341,7 @@ class ArchiveExtractionTests(unittest.TestCase):
             script = os.path.join(PYTHON_DIR, "rpatool.py")
             result = subprocess.run(
                 [sys.executable, "-O", script, "-x", archive_path, "-o", output_dir],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(os.path.exists(escaped_path))
@@ -259,11 +367,8 @@ class ArchiveExtractionTests(unittest.TestCase):
 
             fallback_script = os.path.join(PYTHON_DIR, "rpa.py")
             result = subprocess.run(
-                [sys.executable, fallback_script, archive_path],
-                cwd=output_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
+                [sys.executable, fallback_script, archive_path], cwd=output_dir,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(os.path.exists(escaped_path))
