@@ -1,106 +1,240 @@
-import io, mmap, pickle, zlib
+# Restricted fallback extractor for RPA-3.0 archives.
+# This is used only when the primary extractor cannot process an archive.
+from __future__ import print_function
 
-class GzipIO(io.IOBase):
-    def __init__(self, file):
-        self.file = file
-        self.dc = zlib.decompressobj()
-        self.buffer = bytearray()
+import io
+import mmap
+import os
+try:
+    import pickle5 as pickle
+except ImportError:
+    import pickle
+import re
+import sys
+import zlib
 
-    def readable(): return True
-    def seekable(): return False
-    def writable(): return False
+try:
+    text_type = unicode
+    integer_types = (int, long)
+except NameError:
+    text_type = str
+    integer_types = (int,)
 
-    def read(self, n=-1):
-        if n == -1:
-            return self.readall()
-        while n > len(self.buffer):
-            b_in = bytearray(4096)
-            count = self.file.readinto(b_in)
-            self.buffer += b_in
+try:
+    binary_type = bytes
+except NameError:
+    binary_type = str
 
-            if count < 4096: # EOF
-                self.buffer += self.dc.flush()
-                break
 
-        out = self.buffer[:n]
-        del self.buffer[:n]
-        return out
-        pass
+class RestrictedUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        raise pickle.UnpicklingError(
+            "global objects are not permitted in an RPA index: %s.%s" % (module, name)
+        )
 
-    def readall(self):
-        pass
+    def find_global(self, module, name):
+        raise pickle.UnpicklingError(
+            "global objects are not permitted in an RPA index: %s.%s" % (module, name)
+        )
 
-# Index format is a dictionary mapping file names to data blocks.
-# Each block is specified as a 2- or 3-tuple of (offset, len, [start]).
-# offset and len are obfuscated with the 32-bit key (xor cipher).
-#
-# Start appears to be used for buffering. In practice, it appears to be written
-# to archives as an empty string. When reading a SubFile (loader.py:237), the
-# start of a file from the index is prepended to the contents.
-#
-# Blocks are actually lists containing tuples; in practice, it seems the
-# list is always only 1 element long.
+
+def safe_unpickle(data):
+    stream = io.BytesIO(data)
+    if sys.version_info[0] >= 3:
+        return RestrictedUnpickler(stream, encoding="latin1").load()
+    return RestrictedUnpickler(stream).load()
+
+MAX_INDEX_BYTES = 512 * 1024 * 1024
+
+def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
+    """Decompress an RPA index with an upper bound on expanded size."""
+    decoder = zlib.decompressobj()
+    chunks = []
+    pending = data
+    total = 0
+    while pending:
+        piece = decoder.decompress(pending, limit - total + 1)
+        total += len(piece)
+        if total > limit:
+            raise ValueError("decompressed RPA index exceeds the safety limit")
+        chunks.append(piece)
+        next_pending = decoder.unconsumed_tail
+        if next_pending == pending and not piece:
+            raise ValueError("invalid or stalled compressed RPA index")
+        pending = next_pending
+    tail = decoder.flush()
+    total += len(tail)
+    if total > limit:
+        raise ValueError("decompressed RPA index exceeds the safety limit")
+    chunks.append(tail)
+    return b"".join(chunks)
+
+
+def to_text(value):
+    if isinstance(value, text_type):
+        return value
+    if isinstance(value, binary_type):
+        if sys.version_info[0] >= 3:
+            try:
+                return value.decode("utf-8")
+            except UnicodeDecodeError:
+                return value.decode("latin1")
+        return value.decode("utf-8")
+    raise ValueError("archive path is not a string")
+
+
+def safe_output_path(root, archive_name):
+    name = to_text(archive_name).replace("\\", "/")
+    if not name or "\x00" in name:
+        raise ValueError("empty or invalid archive path")
+    if name.startswith("/") or name.startswith("//") or re.match(r"^[A-Za-z]:", name):
+        raise ValueError("absolute paths are not allowed")
+
+    parts = []
+    for part in name.split("/"):
+        if part in ("", "."):
+            continue
+        if part == ".." or part.rstrip(" .") in ("", ".", ".."):
+            raise ValueError("parent-directory traversal is not allowed")
+        if any(char in part for char in (":", "<", ">", '"', "|", "?", "*")):
+            raise ValueError("invalid character in archive path component")
+        device_name = part.rstrip(" .").split(".", 1)[0].upper()
+        if device_name in ("CON", "PRN", "AUX", "NUL") or re.match(r"^(COM|LPT)[1-9]$", device_name):
+            raise ValueError("reserved device name in archive path")
+        parts.append(part)
+    if not parts:
+        raise ValueError("archive path does not name a file")
+
+    root_real = os.path.realpath(root)
+    candidate = os.path.join(root_real, *parts)
+    parent_real = os.path.realpath(os.path.dirname(candidate))
+    relative_parent = os.path.relpath(parent_real, root_real)
+    if (relative_parent == os.pardir or
+            relative_parent.startswith(os.pardir + os.sep) or
+            os.path.isabs(relative_parent)):
+        raise ValueError("resolved output path escapes the extraction directory")
+    if os.path.islink(candidate):
+        raise ValueError("refusing to overwrite a symbolic link")
+    if os.path.exists(candidate):
+        info = os.stat(candidate)
+        if not os.path.isfile(candidate):
+            raise ValueError("output path is not a regular file")
+        if getattr(info, "st_nlink", 1) > 1:
+            raise ValueError("refusing to overwrite a file with multiple hard links")
+    return candidate
+
 
 class RPA(object):
-    def __init__(self, fname):
-        self.fname = fname
-        with open(fname, "rb") as f:
-            self.mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        self._index = self.loadIndex()
-        self.files = self.buildFileSet()
+    def __init__(self, filename):
+        self.filename = filename
+        self.file = open(filename, "rb")
+        try:
+            self.mm = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
+            self.index_offset, self.key = self.load_index_header()
+            self.index = self.load_index()
+            self.files = self.build_file_set()
+        except Exception:
+            if hasattr(self, "mm"):
+                try:
+                    self.mm.close()
+                except Exception:
+                    pass
+            self.file.close()
+            raise
 
-    def loadIndex(self):
+    def load_index_header(self):
         self.mm.seek(0)
         header = self.mm.readline()
-        assert header.startswith(b"RPA-3.0 ")
-            
-        idx_ofs = int(header[8:24], 16)
-        idx_key = int(header[25:33], 16)
-        #with GzipIO(f) as gz:
-        #    idx = pickle.load(gz)
-        idx = pickle.loads(zlib.decompress(self.mm[idx_ofs:]))
+        fields = header.split()
+        if len(fields) < 3 or fields[0] != b"RPA-3.0":
+            raise ValueError("fallback extractor supports RPA-3.0 only")
+        try:
+            index_offset = int(fields[1], 16)
+            key = 0
+            for value in fields[2:]:
+                key ^= int(value, 16)
+        except ValueError:
+            raise ValueError("invalid RPA-3.0 header metadata")
+        if index_offset < len(header) or index_offset >= len(self.mm):
+            raise ValueError("RPA index offset is outside the archive")
+        return index_offset, key
 
-        for k, v in idx.items():
-            # Block is a list. Meaningful?
-            assert len(v) == 1
-            assert len(v[0]) in (2, 3)
+    def load_index(self):
+        try:
+            raw = safe_zlib_decompress(self.mm[self.index_offset:])
+            index = safe_unpickle(raw)
+        except Exception as exc:
+            raise ValueError("unable to safely read RPA index: %s" % exc)
+        if not isinstance(index, dict):
+            raise ValueError("RPA index must be a dictionary")
 
-            if len(v[0]) == 2:  # No start
-                ofs, dlen = v[0]
-                v[0] = (ofs ^ idx_key, dlen ^ idx_key, '')
-            else:
-                ofs, dlen, start = v[0]
-                v[0] = (ofs ^ idx_key, dlen ^ idx_key, start)
+        normalized = {}
+        for name, blocks in index.items():
+            to_text(name)
+            if not isinstance(blocks, (list, tuple)) or not blocks:
+                raise ValueError("invalid block list in RPA index")
+            checked = []
+            for block in blocks:
+                if not isinstance(block, (list, tuple)) or len(block) not in (2, 3):
+                    raise ValueError("invalid block record in RPA index")
+                if (not isinstance(block[0], integer_types) or isinstance(block[0], bool) or
+                        not isinstance(block[1], integer_types) or isinstance(block[1], bool)):
+                    raise ValueError("RPA offsets and lengths must be integers")
+                offset, length = block[0] ^ self.key, block[1] ^ self.key
+                prefix = block[2] if len(block) == 3 else (b"" if sys.version_info[0] >= 3 else "")
+                if offset < 0 or length < 0 or offset > self.index_offset or length > self.index_offset - offset:
+                    raise ValueError("RPA data block points outside the archive data region")
+                if len(block) == 3 and not isinstance(prefix, (text_type, binary_type)):
+                    raise ValueError("invalid prefix value in RPA index")
+                if len(prefix) > length:
+                    raise ValueError("RPA prefix is longer than its data block")
+                if isinstance(prefix, text_type) and sys.version_info[0] >= 3:
+                    prefix = prefix.encode("latin1")
+                checked.append((offset, length, prefix))
+            normalized[name] = checked
+        return normalized
 
-        return idx
+    def build_file_set(self):
+        result = {}
+        for name, blocks in self.index.items():
+            if not blocks:
+                raise ValueError("archive entry has no data blocks")
+            offset, length, prefix = blocks[0]
+            if prefix:
+                # The legacy fallback historically did not support prefixes.
+                raise ValueError("fallback extractor cannot process prefixed RPA blocks")
+            result[name] = self.mm[offset:offset + length]
+        return result
 
-    def buildFileSet(self):
-        fileset = {}
-        for name, params in self._index.items():
-            assert len(params) == 1
-            ofs, dlen, start = params[0]
-            assert not start
-            fileset[name] = self.mm[ofs:ofs+dlen]
-        return fileset
+    def close(self):
+        try:
+            self.mm.close()
+        finally:
+            self.file.close()
 
-import os.path
-def mkdirp(path):
-    if len(path) == 0:
-        return
-    path = path.split('/')
-    d = ''
 
-    for i in range(len(path)):
-        d = os.path.join(d, path[i])
-        if not os.path.isdir(d):
-            os.mkdir(d)
+def extract(filename):
+    archive = RPA(filename)
+    try:
+        root = os.getcwd()
+        for archive_name, contents in archive.files.items():
+            destination = safe_output_path(root, archive_name)
+            parent = os.path.dirname(destination)
+            if not os.path.isdir(parent):
+                os.makedirs(parent)
+            destination = safe_output_path(root, archive_name)
+            with open(destination, "wb") as output:
+                output.write(contents)
+    finally:
+        archive.close()
 
 
 if __name__ == "__main__":
-    import sys
-    rpa = RPA(sys.argv[1])
-    for file, contents in rpa.files.items():
-        # print("{0:10} {1}".format(len(contents), file))
-        mkdirp(os.path.dirname(file))
-        with open(file, 'wb') as f:
-            f.write(contents)
+    if len(sys.argv) != 2:
+        print("Usage: rpa.py ARCHIVE", file=sys.stderr)
+        sys.exit(2)
+    try:
+        extract(sys.argv[1])
+    except Exception as exc:
+        print("RPA fallback extraction failed: %s" % exc, file=sys.stderr)
+        sys.exit(1)
