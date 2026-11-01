@@ -4,7 +4,7 @@ Cross-platform Ren'Py game utility - Ported from [Unren 1.0.11d](https://f95zone
 
 ## Features
 
-- **RPA Extraction**: Extract files from `.rpa` archives (RPA-2.0 and RPA-3.0)
+- **RPA Extraction**: Extract files from `.rpa` archives (RPA-2.0, RPA-3.0, and RPA-3.2)
 - **Enable Console**: Developer console (SHIFT+O) and dev menu (SHIFT+D)
 - **Quick Save/Load**: F5/F9 hotkeys for quick save and load
 - **Skip Unseen**: Force-enable skipping of all text including unseen content
