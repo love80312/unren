@@ -162,6 +162,49 @@ class PickleSafetyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     module.safe_zlib_decompress(compressed)
 
+    def test_python27_style_zlib_completion_uses_bounded_sentinel(self):
+        # Simulate Python 2.7's decompressobj API, which has unused_data but
+        # no eof attribute. The implementation must validate the sentinel
+        # without making an unbounded second zlib.decompress() call.
+        for module in (rpatool, rpa_fallback):
+            original_factory = module.zlib.decompressobj
+
+            class LegacyDecompressor(object):
+                def __init__(self, decoder):
+                    self.decoder = decoder
+
+                def decompress(self, data, max_length=0):
+                    if max_length:
+                        return self.decoder.decompress(data, max_length)
+                    return self.decoder.decompress(data)
+
+                def flush(self):
+                    return self.decoder.flush()
+
+                @property
+                def unconsumed_tail(self):
+                    return self.decoder.unconsumed_tail
+
+                @property
+                def unused_data(self):
+                    return self.decoder.unused_data
+
+                def __getattr__(self, name):
+                    if name == "eof":
+                        raise AttributeError(name)
+                    return getattr(self.decoder, name)
+
+            try:
+                module.zlib.decompressobj = lambda: LegacyDecompressor(original_factory())
+                compressed = zlib.compress(b"complete index payload")
+                self.assertEqual(module.safe_zlib_decompress(compressed), b"complete index payload")
+                with self.assertRaises(Exception):
+                    module.safe_zlib_decompress(compressed[:-1])
+                with self.assertRaises(ValueError):
+                    module.safe_zlib_decompress(compressed + b"trailing-junk")
+            finally:
+                module.zlib.decompressobj = original_factory
+
     def test_compressed_index_input_size_is_bounded(self):
         for module in (rpatool, rpatool_py2, rpa_fallback):
             original_limit = module.MAX_INDEX_COMPRESSED_BYTES
