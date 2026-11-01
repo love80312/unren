@@ -572,8 +572,19 @@ func (r *Runner) DecompileAllRPYCWithFiles() (int, int, int, []string, error) {
 		cmd.Env = env
 
 		if output, cmdErr := cmd.CombinedOutput(); cmdErr == nil {
-			// A zero exit status alone is insufficient: only a newly created
-			// regular RPY file qualifies for source cleanup.
+			// unrpyc currently reports per-file worker failures in its summary
+			// but still exits with status 0. Require the explicit one-file success
+			// marker as well as a newly created regular output before --clean may
+			// consider the RPYC source safe to remove.
+			if !bytes.Contains(output, []byte("> 1 file were successfully decompiled.")) {
+				fmt.Printf("    - 反編譯器未確認成功完成 %s，保留原始 RPYC 檔案。\n", baseName)
+				if len(output) > 0 {
+					fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
+				}
+				failed++
+				return nil
+			}
+
 			outInfo, statErr := os.Lstat(rpyPath)
 			if statErr == nil && outInfo.Mode().IsRegular() {
 				success++
