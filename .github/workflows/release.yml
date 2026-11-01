@@ -3,7 +3,7 @@ name: Build (Actions Artifact)
 on:
   push:
     branches:
-      - gofix0
+      - gofix
   workflow_dispatch:
 
 permissions:
@@ -32,8 +32,11 @@ jobs:
       - name: Show Go version
         run: go version
 
-      - name: Run tests
+      - name: Run Go tests
         run: go test ./...
+
+      - name: Run Python archive safety tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
       - name: Build all supported platforms
         run: bash ./build.sh
