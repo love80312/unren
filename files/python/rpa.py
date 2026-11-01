@@ -28,6 +28,9 @@ except NameError:
     binary_type = str
 
 MAX_INDEX_BYTES = 512 * 1024 * 1024
+# Allow DEFLATE framing overhead for incompressible indices, but keep the
+# compressed tail bounded before it is copied from the memory map.
+MAX_INDEX_COMPRESSED_BYTES = MAX_INDEX_BYTES + (MAX_INDEX_BYTES // 100) + 65536
 COPY_CHUNK_BYTES = 8 * 1024 * 1024
 
 
@@ -78,6 +81,10 @@ def safe_unpickle(data):
 
 
 def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
+    """Decompress one complete RPA index stream within bounded input/output sizes."""
+    if len(data) > MAX_INDEX_COMPRESSED_BYTES:
+        raise ValueError("compressed RPA index exceeds the safety limit")
+
     decoder = zlib.decompressobj()
     chunks = []
     pending = data
@@ -92,11 +99,26 @@ def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
         if next_pending == pending and not piece:
             raise ValueError("invalid or stalled compressed RPA index")
         pending = next_pending
+
     tail = decoder.flush()
     total += len(tail)
     if total > limit:
         raise ValueError("decompressed RPA index exceeds the safety limit")
     chunks.append(tail)
+
+    if hasattr(decoder, "eof"):
+        if not decoder.eof:
+            raise ValueError("truncated compressed RPA index")
+    else:
+        # Python 2.7 has no decompressobj.eof. The streaming pass has already
+        # bounded output; validate completion using the legacy zlib API.
+        try:
+            verified = zlib.decompress(data)
+        except zlib.error:
+            raise ValueError("truncated or invalid compressed RPA index")
+        if len(verified) != total:
+            raise ValueError("incomplete compressed RPA index")
+
     return b"".join(chunks)
 
 
@@ -209,6 +231,9 @@ class RPA(object):
         return index_offset, key
 
     def load_index(self):
+        compressed_size = len(self.mm) - self.index_offset
+        if compressed_size > MAX_INDEX_COMPRESSED_BYTES:
+            raise ValueError("compressed RPA index exceeds the safety limit")
         try:
             raw = safe_zlib_decompress(self.mm[self.index_offset:])
             index = safe_unpickle(raw)

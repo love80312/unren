@@ -30,6 +30,9 @@ except NameError:
     binary_type = str
 
 MAX_INDEX_BYTES = 512 * 1024 * 1024
+# A DEFLATE stream can be slightly larger than its input when data is
+# incompressible. Allow a small framing margin while still bounding memory.
+MAX_INDEX_COMPRESSED_BYTES = MAX_INDEX_BYTES + (MAX_INDEX_BYTES // 100) + 65536
 COPY_CHUNK_BYTES = 8 * 1024 * 1024
 
 
@@ -80,7 +83,10 @@ def safe_unpickle(data):
 
 
 def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
-    """Decompress an RPA index with an upper bound on expanded size."""
+    """Decompress one complete RPA index stream within bounded input/output sizes."""
+    if len(data) > MAX_INDEX_COMPRESSED_BYTES:
+        raise ValueError("compressed RPA index exceeds the safety limit")
+
     decoder = zlib.decompressobj()
     chunks = []
     pending = data
@@ -95,11 +101,29 @@ def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
         if next_pending == pending and not piece:
             raise ValueError("invalid or stalled compressed RPA index")
         pending = next_pending
+
     tail = decoder.flush()
     total += len(tail)
     if total > limit:
         raise ValueError("decompressed RPA index exceeds the safety limit")
     chunks.append(tail)
+
+    # decompressobj may return partial output for a truncated stream. Reject
+    # it instead of passing an incomplete pickle to the restricted unpickler.
+    if hasattr(decoder, "eof"):
+        if not decoder.eof:
+            raise ValueError("truncated compressed RPA index")
+    else:
+        # Python 2.7 does not expose the eof attribute. The bounded streaming
+        # pass above has already established that the output fits the limit;
+        # validate the completed stream once more using the legacy API.
+        try:
+            verified = zlib.decompress(data)
+        except zlib.error:
+            raise ValueError("truncated or invalid compressed RPA index")
+        if len(verified) != total:
+            raise ValueError("incomplete compressed RPA index")
+
     return b"".join(chunks)
 
 
@@ -253,8 +277,13 @@ class RenPyArchive(object):
         return version, index_offset, key
 
     def read_index(self):
+        compressed_size = self.size - self.index_offset
+        if compressed_size > MAX_INDEX_COMPRESSED_BYTES:
+            raise ValueError("compressed RPA index exceeds the safety limit")
         self.handle.seek(self.index_offset)
-        compressed = self.handle.read()
+        compressed = self.handle.read(MAX_INDEX_COMPRESSED_BYTES + 1)
+        if len(compressed) != compressed_size:
+            raise ValueError("unable to read the complete RPA index")
         try:
             raw_index = safe_zlib_decompress(compressed)
             indexes = safe_unpickle(raw_index)
