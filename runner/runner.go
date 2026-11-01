@@ -22,6 +22,10 @@ type Runner struct {
 	PythonExe string
 	PythonLib string
 	IsPython3 bool
+
+	// ownsTempDir is true only when this Runner created TempDir itself.
+	// Cleanup must never remove a caller-supplied or game-owned directory.
+	ownsTempDir bool
 }
 
 // NewRunner creates a new runner for the detected game.
@@ -213,24 +217,43 @@ func (r *Runner) findPythonLib(pythonHome string) string {
 // SetupTempDir creates a temporary directory and extracts scripts.
 // The batch script uses the game root directory (maindir) for these scripts.
 func (r *Runner) SetupTempDir() error {
-	// Use game root directory
-	r.TempDir = r.GameInfo.RootDir
+	if r.TempDir != "" {
+		if r.ownsTempDir {
+			return nil
+		}
+		return fmt.Errorf("拒絕寫入未由 UnRen 建立的暫存目錄：%s", r.TempDir)
+	}
+	if r.GameInfo == nil || r.GameInfo.RootDir == "" {
+		return fmt.Errorf("尚未設定遊戲根目錄，無法建立暫存目錄")
+	}
 
-	// Extract rpatool to _rpatool.py (matching batch script)
+	// Keep helper scripts and Python cache files out of the game directory.
+	// MkdirTemp creates a private directory (0700 on Unix-like systems).
+	tempDir, err := os.MkdirTemp("", "unren-")
+	if err != nil {
+		return fmt.Errorf("無法建立 UnRen 暫存目錄：%w", err)
+	}
+	r.TempDir = tempDir
+	r.ownsTempDir = true
+
+	// Extract rpatool and the fallback extractor into our private directory.
 	rpatool, err := files.GetRPATool(r.IsPython3)
 	if err != nil {
+		r.Cleanup()
 		return fmt.Errorf("無法讀取 rpatool：%w", err)
 	}
-	if err := os.WriteFile(filepath.Join(r.TempDir, "_rpatool.py"), rpatool, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(r.TempDir, "_rpatool.py"), rpatool, 0600); err != nil {
+		r.Cleanup()
 		return fmt.Errorf("無法寫入 rpatool：%w", err)
 	}
 
-	// Extract rpa.py fallback to _rpa.py (matching batch script)
 	rpaFallback, err := files.GetRPAFallback()
 	if err != nil {
+		r.Cleanup()
 		return fmt.Errorf("無法讀取 rpa.py：%w", err)
 	}
-	if err := os.WriteFile(filepath.Join(r.TempDir, "_rpa.py"), rpaFallback, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(r.TempDir, "_rpa.py"), rpaFallback, 0600); err != nil {
+		r.Cleanup()
 		return fmt.Errorf("無法寫入 rpa.py：%w", err)
 	}
 
@@ -250,28 +273,16 @@ func (r *Runner) SetupUnrpyc() error {
 
 // Cleanup removes the temporary files created beside the game executable.
 func (r *Runner) Cleanup() {
-	if r.TempDir == "" {
+	// TempDir used to point at the game root. Removing fixed names and entire
+	// subdirectories there could delete pre-existing game files. Only remove
+	// the isolated directory created by this Runner instance.
+	if r.TempDir == "" || !r.ownsTempDir {
 		return
 	}
 
-	files := []string{
-		"_rpatool.py",
-		"_rpa.py",
-		"unrpyc.py",
-		"deobfuscate.py",
-		"_rpatool.pyc", // Python compilation files
-		"_rpa.pyc",
-		"unrpyc.pyc",
-		"deobfuscate.pyc",
-	}
-
-	for _, f := range files {
-		os.Remove(filepath.Join(r.TempDir, f))
-	}
-
-	os.RemoveAll(filepath.Join(r.TempDir, "decompiler"))
-	// Also remove __pycache__ if created
-	os.RemoveAll(filepath.Join(r.TempDir, "__pycache__"))
+	_ = os.RemoveAll(r.TempDir)
+	r.TempDir = ""
+	r.ownsTempDir = false
 }
 
 // getPythonEnv returns the environment variables for Python execution.

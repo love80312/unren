@@ -1,9 +1,106 @@
 package runner
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/unren/unren-go/detector"
 )
+
+func TestSetupTempDirDoesNotWriteIntoGameRoot(t *testing.T) {
+	gameRoot := t.TempDir()
+
+	// Files and directories with names historically used by Cleanup must survive.
+	preserved := map[string]string{
+		"_rpatool.py":                 "user rpatool",
+		"_rpa.py":                     "user fallback",
+		"unrpyc.py":                   "user decompiler",
+		"decompiler/user_module.py":   "user package file",
+		"__pycache__/user_module.pyc": "user bytecode",
+	}
+	for name, content := range preserved {
+		path := filepath.Join(gameRoot, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := &Runner{
+		GameInfo:  &detector.GameInfo{RootDir: gameRoot},
+		IsPython3: true,
+	}
+	if err := r.SetupTempDir(); err != nil {
+		t.Fatalf("SetupTempDir failed: %v", err)
+	}
+	createdTempDir := r.TempDir
+	if createdTempDir == gameRoot {
+		t.Fatal("temporary directory must not be the game root")
+	}
+	if _, err := os.Stat(filepath.Join(createdTempDir, "_rpatool.py")); err != nil {
+		t.Fatalf("embedded rpatool was not extracted into the private temp directory: %v", err)
+	}
+
+	r.Cleanup()
+	if r.TempDir != "" || r.ownsTempDir {
+		t.Fatal("Cleanup should clear the owned temporary directory state")
+	}
+	if _, err := os.Stat(createdTempDir); !os.IsNotExist(err) {
+		t.Fatalf("private temporary directory was not removed: %v", err)
+	}
+
+	for name, expected := range preserved {
+		actual, err := os.ReadFile(filepath.Join(gameRoot, name))
+		if err != nil {
+			t.Fatalf("game data %q was removed: %v", name, err)
+		}
+		if string(actual) != expected {
+			t.Fatalf("game data %q was modified: got %q, want %q", name, actual, expected)
+		}
+	}
+}
+
+func TestCleanupDoesNotRemoveUnownedDirectory(t *testing.T) {
+	providedDir := t.TempDir()
+	sentinel := filepath.Join(providedDir, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{TempDir: providedDir}
+	r.Cleanup()
+
+	actual, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("Cleanup removed an unowned directory: %v", err)
+	}
+	if string(actual) != "keep" {
+		t.Fatalf("unexpected sentinel contents: %q", actual)
+	}
+}
+
+func TestSetupTempDirRejectsCallerSuppliedDirectory(t *testing.T) {
+	providedDir := t.TempDir()
+	marker := filepath.Join(providedDir, "marker.txt")
+	if err := os.WriteFile(marker, []byte("untouched"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{
+		GameInfo: &detector.GameInfo{RootDir: providedDir},
+		TempDir:  providedDir,
+	}
+	if err := r.SetupTempDir(); err == nil {
+		t.Fatal("SetupTempDir should reject a directory it did not create")
+	}
+	if _, err := os.Stat(filepath.Join(providedDir, "_rpatool.py")); !os.IsNotExist(err) {
+		t.Fatalf("SetupTempDir unexpectedly wrote into caller directory: %v", err)
+	}
+}
 
 func TestLocalizeToolOutput(t *testing.T) {
 	input := []byte("Decompiling \"script.rpyc\" to \"script.rpy\" ...\n" +
