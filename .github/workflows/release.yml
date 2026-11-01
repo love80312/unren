@@ -3,7 +3,7 @@ name: Build (Actions Artifact)
 on:
   push:
     branches:
-      - gofix_2
+      - gofix_2x
   workflow_dispatch:
 
 permissions:
