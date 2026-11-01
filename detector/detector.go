@@ -52,8 +52,8 @@ func DetectGame(dir string) (*GameInfo, error) {
 	}
 
 	// Check if we're in the game/ subdirectory or the root
-	if filepath.Base(absDir) == "game" {
-		// We're in the game/ directory, parent is root
+	if filepath.Base(absDir) == "game" && utils.DirExists(absDir) {
+		// We're in an existing game/ directory; its parent is the root.
 		info.GameDir = absDir
 		info.RootDir = filepath.Dir(absDir)
 	} else if utils.DirExists(filepath.Join(absDir, "game")) {
