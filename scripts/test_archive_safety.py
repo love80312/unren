@@ -144,6 +144,25 @@ class PickleSafetyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.safe_zlib_decompress(compressed, limit=128)
 
+    def test_truncated_zlib_stream_is_rejected(self):
+        compressed = zlib.compress(b"complete index payload")
+        truncated = compressed[:-1]
+        for module in (rpatool, rpatool_py2, rpa_fallback):
+            with self.subTest(module=module.__name__):
+                with self.assertRaises(ValueError):
+                    module.safe_zlib_decompress(truncated)
+
+    def test_compressed_index_input_size_is_bounded(self):
+        for module in (rpatool, rpatool_py2, rpa_fallback):
+            original_limit = module.MAX_INDEX_COMPRESSED_BYTES
+            try:
+                module.MAX_INDEX_COMPRESSED_BYTES = 4
+                with self.subTest(module=module.__name__):
+                    with self.assertRaises(ValueError):
+                        module.safe_zlib_decompress(b"12345")
+            finally:
+                module.MAX_INDEX_COMPRESSED_BYTES = original_limit
+
 
 class OutputPathSafetyTests(unittest.TestCase):
     def setUp(self):
@@ -194,6 +213,41 @@ class OutputPathSafetyTests(unittest.TestCase):
 
 
 class ArchiveExtractionTests(unittest.TestCase):
+    def test_archives_with_truncated_zlib_index_are_rejected(self):
+        for module, constructor in ((rpatool, rpatool.RenPyArchive), (rpa_fallback, rpa_fallback.RPA)):
+            with self.subTest(module=module.__name__), tempfile.TemporaryDirectory() as temp:
+                archive_path = os.path.join(temp, "truncated-index.rpa")
+                make_rpa30(archive_path, "scripts/hello.txt", b"payload")
+                with open(archive_path, "r+b") as archive:
+                    archive.seek(0, os.SEEK_END)
+                    archive.truncate(archive.tell() - 1)
+                with self.assertRaises(ValueError):
+                    constructor(archive_path)
+
+    def test_primary_archive_rejects_oversized_compressed_index_before_read(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = os.path.join(temp, "oversized-index.rpa")
+            make_rpa30(archive_path, "scripts/hello.txt", b"payload")
+            original_limit = rpatool.MAX_INDEX_COMPRESSED_BYTES
+            try:
+                rpatool.MAX_INDEX_COMPRESSED_BYTES = 4
+                with self.assertRaises(ValueError):
+                    rpatool.RenPyArchive(archive_path)
+            finally:
+                rpatool.MAX_INDEX_COMPRESSED_BYTES = original_limit
+
+    def test_fallback_archive_rejects_oversized_compressed_index_before_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive_path = os.path.join(temp, "oversized-index.rpa")
+            make_rpa30(archive_path, "scripts/hello.txt", b"payload")
+            original_limit = rpa_fallback.MAX_INDEX_COMPRESSED_BYTES
+            try:
+                rpa_fallback.MAX_INDEX_COMPRESSED_BYTES = 4
+                with self.assertRaises(ValueError):
+                    rpa_fallback.RPA(archive_path)
+            finally:
+                rpa_fallback.MAX_INDEX_COMPRESSED_BYTES = original_limit
+
     def test_valid_rpa30_extracts(self):
         with tempfile.TemporaryDirectory() as temp:
             archive_path = os.path.join(temp, "game.rpa")
