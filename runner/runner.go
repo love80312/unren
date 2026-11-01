@@ -571,41 +571,70 @@ func (r *Runner) DecompileAllRPYCWithFiles() (int, int, int, []string, error) {
 		cmd.Dir = filepath.Dir(path)
 		cmd.Env = env
 
-		if output, cmdErr := cmd.CombinedOutput(); cmdErr == nil {
-			// unrpyc currently reports per-file worker failures in its summary
-			// but still exits with status 0. Require the explicit one-file success
-			// marker as well as a newly created regular output before --clean may
-			// consider the RPYC source safe to remove.
-			if !bytes.Contains(output, []byte("> 1 file were successfully decompiled.")) {
-				fmt.Printf("    - 反編譯器未確認成功完成 %s，保留原始 RPYC 檔案。\n", baseName)
-				if len(output) > 0 {
-					fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
-				}
-				failed++
-				return nil
-			}
+		output, cmdErr := cmd.CombinedOutput()
+		successMarker := bytes.Contains(output, []byte("> 1 file were successfully decompiled."))
+		outInfo, statErr := os.Lstat(rpyPath)
+		validOutput := statErr == nil && outInfo.Mode().IsRegular()
 
-			outInfo, statErr := os.Lstat(rpyPath)
-			if statErr == nil && outInfo.Mode().IsRegular() {
-				success++
-				succeededFiles = append(succeededFiles, path)
-			} else {
-				fmt.Printf("    - 無法建立有效的 RPY 檔案：找不到一般檔案 %s.rpy。\n", nameWithoutExt)
-				if len(output) > 0 {
-					fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
-				}
-				failed++
-			}
-		} else {
-			fmt.Printf("    - 反編譯 \"%s\" 失敗。錯誤：%v\n", baseName, cmdErr)
-			if len(output) > 0 {
-				fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
-			}
-			failed++
+		// A zero exit status alone is insufficient: unrpyc can report per-file
+		// worker errors in its summary and still exit successfully. Require both
+		// the explicit one-file success marker and a newly created regular RPY.
+		if cmdErr == nil && successMarker && validOutput {
+			success++
+			succeededFiles = append(succeededFiles, path)
+			return nil
 		}
 
+		if cmdErr != nil {
+			fmt.Printf("    - 反編譯 \"%s\" 失敗。錯誤：%v\n", baseName, cmdErr)
+		} else if !successMarker {
+			fmt.Printf("    - 反編譯器未確認成功完成 %s，保留原始 RPYC 檔案。\n", baseName)
+		} else if statErr != nil {
+			fmt.Printf("    - 無法確認反編譯輸出 %s.rpy：%v。\n", nameWithoutExt, statErr)
+		} else {
+			fmt.Printf("    - 反編譯輸出 %s.rpy 不是一般檔案，保留該路徑。\n", nameWithoutExt)
+		}
+		if len(output) > 0 {
+			fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
+		}
+
+		// The output path was confirmed absent immediately before starting this
+		// child process. If this run left a partial RPY file, remove only that
+		// newly appeared file so the next run can retry. Never touch directories
+		// or other special filesystem objects. Removing a symlink removes only
+		// the link itself, never its target.
+		if removed, cleanupErr := cleanupFailedRPYOutput(rpyPath); cleanupErr != nil {
+			fmt.Printf("    ! 無法清除本次失敗產生的輸出 %s：%v\n", filepath.Base(rpyPath), cleanupErr)
+		} else if removed {
+			fmt.Printf("    - 已移除本次失敗產生的不完整輸出：%s\n", filepath.Base(rpyPath))
+		}
+		failed++
 		return nil
 	})
 
 	return success, skipped, failed, succeededFiles, walkErr
+}
+
+// cleanupFailedRPYOutput removes only an output path that appeared after the
+// caller confirmed it did not exist before running the decompiler. Regular
+// files and symlinks are safe to unlink; directories and special files are
+// preserved because they are not valid unrpyc outputs and may contain user data.
+func cleanupFailedRPYOutput(rpyPath string) (bool, error) {
+	info, err := os.Lstat(rpyPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("無法檢查輸出路徑：%w", err)
+	}
+
+	mode := info.Mode()
+	if !mode.IsRegular() && mode&os.ModeSymlink == 0 {
+		return false, fmt.Errorf("輸出路徑不是一般檔案或符號連結（%s），為避免誤刪予以保留", mode)
+	}
+
+	if err := os.Remove(rpyPath); err != nil {
+		return false, fmt.Errorf("無法移除輸出路徑：%w", err)
+	}
+	return true, nil
 }
