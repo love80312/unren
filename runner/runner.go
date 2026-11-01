@@ -3,6 +3,7 @@
 package runner
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,7 +33,7 @@ func NewRunner(gameInfo *detector.GameInfo) (*Runner, error) {
 	// Find Python executable
 	pythonExe, pythonLib, isPy3, err := r.findPython()
 	if err != nil {
-		return nil, fmt.Errorf("failed to find Python: %w", err)
+		return nil, err
 	}
 	r.PythonExe = pythonExe
 	r.PythonLib = pythonLib
@@ -43,7 +44,7 @@ func NewRunner(gameInfo *detector.GameInfo) (*Runner, error) {
 		if info, err := os.Stat(r.PythonExe); err == nil {
 			if info.Mode()&0111 == 0 {
 				if err := os.Chmod(r.PythonExe, info.Mode()|0111); err != nil {
-					return nil, fmt.Errorf("failed to make Python executable: %w", err)
+					return nil, fmt.Errorf("無法設定 Python 執行權限：%w", err)
 				}
 			}
 		}
@@ -56,11 +57,11 @@ func NewRunner(gameInfo *detector.GameInfo) (*Runner, error) {
 // Returns: pythonExe path, pythonLib path, isPython3, error
 func (r *Runner) findPython() (string, string, bool, error) {
 	if r.GameInfo.RootDir == "" {
-		return "", "", false, fmt.Errorf("game root directory not set")
+		return "", "", false, fmt.Errorf("尚未設定遊戲根目錄")
 	}
 
 	if !r.GameInfo.HasLib || r.GameInfo.LibDir == "" {
-		return "", "", false, fmt.Errorf("lib directory not found")
+		return "", "", false, fmt.Errorf("找不到 lib 目錄")
 	}
 	libDir := r.GameInfo.LibDir
 
@@ -124,7 +125,7 @@ func (r *Runner) findPython() (string, string, bool, error) {
 		return pythonExe, pythonLib, isPy3, nil
 	}
 
-	return "", "", false, fmt.Errorf("could not find Python executable in %s", libDir)
+	return "", "", false, fmt.Errorf("在以下目錄中找不到 Python 執行檔：%s", libDir)
 }
 
 // getPythonExe returns the python executable path if it exists.
@@ -210,7 +211,6 @@ func (r *Runner) findPythonLib(pythonHome string) string {
 }
 
 // SetupTempDir creates a temporary directory and extracts scripts.
-// SetupTempDir creates a temporary directory and extracts scripts.
 // The batch script uses the game root directory (maindir) for these scripts.
 func (r *Runner) SetupTempDir() error {
 	// Use game root directory
@@ -219,25 +219,24 @@ func (r *Runner) SetupTempDir() error {
 	// Extract rpatool to _rpatool.py (matching batch script)
 	rpatool, err := files.GetRPATool(r.IsPython3)
 	if err != nil {
-		return fmt.Errorf("failed to get rpatool: %w", err)
+		return fmt.Errorf("無法讀取 rpatool：%w", err)
 	}
 	if err := os.WriteFile(filepath.Join(r.TempDir, "_rpatool.py"), rpatool, 0644); err != nil {
-		return fmt.Errorf("failed to write rpatool: %w", err)
+		return fmt.Errorf("無法寫入 rpatool：%w", err)
 	}
 
 	// Extract rpa.py fallback to _rpa.py (matching batch script)
 	rpaFallback, err := files.GetRPAFallback()
 	if err != nil {
-		return fmt.Errorf("failed to get rpa.py: %w", err)
+		return fmt.Errorf("無法讀取 rpa.py：%w", err)
 	}
 	if err := os.WriteFile(filepath.Join(r.TempDir, "_rpa.py"), rpaFallback, 0644); err != nil {
-		return fmt.Errorf("failed to write rpa.py: %w", err)
+		return fmt.Errorf("無法寫入 rpa.py：%w", err)
 	}
 
 	return nil
 }
 
-// SetupUnrpyc extracts the unrpyc decompiler.
 // SetupUnrpyc extracts the unrpyc decompiler.
 func (r *Runner) SetupUnrpyc() error {
 	if r.TempDir == "" {
@@ -249,8 +248,7 @@ func (r *Runner) SetupUnrpyc() error {
 	return files.ExtractUnrpyc(r.TempDir, r.IsPython3)
 }
 
-// Cleanup removes the temporary directory.
-// Cleanup removes the temporary files.
+// Cleanup removes the temporary files created beside the game executable.
 func (r *Runner) Cleanup() {
 	if r.TempDir == "" {
 		return
@@ -276,7 +274,6 @@ func (r *Runner) Cleanup() {
 	os.RemoveAll(filepath.Join(r.TempDir, "__pycache__"))
 }
 
-// getPythonEnv returns the environment variables for Python execution.
 // getPythonEnv returns the environment variables for Python execution.
 func (r *Runner) getPythonEnv() []string {
 	pythonHome := filepath.Dir(r.PythonExe)
@@ -306,6 +303,91 @@ func (r *Runner) getPythonEnv() []string {
 	return env
 }
 
+// localizeToolOutput translates known user-facing messages emitted by the embedded
+// rpatool and unrpyc scripts. It deliberately leaves paths, filenames, tracebacks,
+// command-line flags, and technical identifiers unchanged.
+func localizeToolOutput(output []byte) string {
+	s := string(output)
+	replacer := strings.NewReplacer(
+		"warning: pickle5 module could not be loaded and Python version is < 3.8,", "警告：無法載入 pickle5 模組，且 Python 版本低於 3.8，",
+		"newer Ren'Py games may fail to unpack!", "較新的 Ren'Py 遊戲可能無法解包！",
+		"if this occurs, fix it by installing pickle5:", "若發生此情況，請安裝 pickle5：",
+		"if this occurs, please upgrade to a newer Python (>= 3.5).", "若發生此情況，請升級至較新的 Python（>= 3.5）。",
+		"the given file is not a valid Ren'Py archive, or an unsupported version", "指定檔案不是有效的 Ren'Py 封包，或使用不支援的版本",
+		"the requested file ", "要求的檔案 ",
+		" does not exist in the given Ren'Py archive", " 不存在於指定的 Ren'Py 封包中",
+		" does not exist in this archive", " 不存在於此封包中",
+		"no target file found for saving archive", "找不到要儲存的封包目標檔案",
+		"saving is only supported for version 2 and 3 archives", "僅支援儲存為 RPA 2.0 或 3.0 格式",
+		"Could not open archive file ", "無法開啟封包檔案 ",
+		" for reading: ", " 以供讀取：",
+		"Could not add file ", "無法加入檔案 ",
+		" to archive: ", " 至封包：",
+		"Could not save archive file:", "無法儲存封包檔案：",
+		"Could not delete file ", "無法從封包刪除檔案 ",
+		"Could not extract file ", "無法從封包解出檔案 ",
+		" from archive: ", "：",
+		"No operation given :( ", "未指定要執行的操作。 ",
+		"No operation given :(\n", "未指定要執行的操作。\n",
+		"Use ", "請使用 ",
+		" --help for usage details.", " --help 查看使用方式。",
+		"The multiprocessing module is not available or broken!", "無法使用多程序模組！",
+		"Proceeding with single threaded decompilation. This will be slow.", "改以單執行緒進行反編譯，處理速度會較慢。",
+		"Warning: Encountered an unexpected slot structure. It is possible the \n    file header structure has been changed.", "警告：偵測到非預期的資料區塊結構，檔案標頭結構可能已遭修改。",
+		"Unable to find the right slot to load from the rpyc file. The file header structure has been changed. File header:", "無法從 RPYC 檔案找到可載入的資料區塊。檔案標頭結構可能已遭修改。檔案標頭：",
+		"Did not find a zlib compressed blob where it was expected. Either the header has been modified or the file structure has been changed. File header:", "在預期位置找不到 zlib 壓縮資料。檔案標頭或檔案結構可能已遭修改。檔案標頭：",
+		"Warning: analysis found signs that this .rpyc file was generated by ren'py ", "警告：分析結果顯示，此 .rpyc 檔案可能由 Ren'Py ",
+		" or below, while this unrpyc version targets ren'py \n    version 8. Decompilation will still be attempted, but errors or incorrect \n    decompilation might occur. ", " 或更舊版本產生，而目前的 unrpyc 版本主要針對 Ren'Py 8。仍會嘗試反編譯，但可能發生錯誤或產生不正確的結果。 ",
+		"Skipping ", "略過 ",
+		" already exists.", " 已存在。",
+		"Decompiling ", "正在反編譯 ",
+		"Extracting translations from ", "正在擷取翻譯資料：",
+		"Error while extracting translations from ", "擷取翻譯資料時發生錯誤：",
+		"Error while decompiling ", "反編譯時發生錯誤：",
+		"Input path not found: ", "找不到輸入路徑：",
+		"Found no script files to decompile.", "找不到可反編譯的腳本檔案。",
+		"Found 1 file to process. Performing decompilation using 1 worker.", "找到 1 個待處理檔案，使用 1 個工作程序進行反編譯。",
+		"Processed 1 file.", "已處理 1 個檔案。",
+		"> 1 file were successfully decompiled.", "成功反編譯 1 個檔案。",
+		"> 1 file did not have the correct header, these were ignored.", "1 個檔案的標頭格式不正確，已略過。",
+		"> 1 file failed to decompile due to errors.", "1 個檔案反編譯失敗。",
+		"> 1 file were skipped as the output file already existed.", "1 個檔案因輸出檔案已存在而略過。",
+		"> 1 file failed translation extraction.", "1 個檔案擷取翻譯資料失敗。",
+		"To overwrite existing files instead of skipping them, use the --clobber flag.", "若要覆寫已存在的輸出檔案，而非略過，請使用 --clobber 參數。",
+		"To attempt to bypass modifications to the file header, use the --try-harder flag.", "若要嘗試處理遭修改的檔案標頭，請使用 --try-harder 參數。",
+		"Errors were encountered during decompilation. Check the log for more information.", "反編譯過程發生錯誤，請查看記錄以取得詳細資訊。",
+		"When making a bug report, please include this entire log.", "回報問題時，請附上完整的記錄內容。",
+		"Bad format in custom sl displayable registration:", "自訂 SL displayable 註冊格式錯誤：",
+		"Bad child node count in custom sl displayable registration:", "自訂 SL displayable 的子節點數量錯誤：",
+		"must be executed with Python 3.9 or later.", "必須使用 Python 3.9 或更新版本執行。",
+		"must be executed with Python 2.7.", "必須使用 Python 2.7 執行。",
+	)
+	return replacer.Replace(s)
+}
+
+// runWithLocalizedOutput executes a child process and writes its captured output
+// after translating known interface messages. Exit status and command behavior
+// remain unchanged.
+func runWithLocalizedOutput(cmd *exec.Cmd) ([]byte, error) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if stdout.Len() > 0 {
+		fmt.Print(localizeToolOutput(stdout.Bytes()))
+	}
+	if stderr.Len() > 0 {
+		fmt.Fprint(os.Stderr, localizeToolOutput(stderr.Bytes()))
+	}
+
+	output := make([]byte, 0, stdout.Len()+stderr.Len())
+	output = append(output, stdout.Bytes()...)
+	output = append(output, stderr.Bytes()...)
+	return output, err
+}
+
 // ExtractRPA extracts an RPA archive using the embedded rpatool.
 func (r *Runner) ExtractRPA(rpaPath string) error {
 	if r.TempDir == "" {
@@ -323,20 +405,16 @@ func (r *Runner) ExtractRPA(rpaPath string) error {
 	cmd := exec.Command(r.PythonExe, "-O", rpatoolPath, "-x", rpaPath, "-o", outputDir)
 	cmd.Dir = outputDir
 	cmd.Env = env
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
+	if _, err := runWithLocalizedOutput(cmd); err != nil {
 		// Fallback to rpa.py (simpler extractor)
-		fmt.Println("    Retrying with fallback extractor...")
+		fmt.Println("    改用備援解包工具重試...")
 		cmd = exec.Command(r.PythonExe, rpaFallbackPath, rpaPath)
 		cmd.Dir = outputDir
 		cmd.Env = env
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
 
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to extract RPA: %w", err)
+		if _, err := runWithLocalizedOutput(cmd); err != nil {
+			return fmt.Errorf("RPA 解包失敗：%w", err)
 		}
 	}
 
@@ -346,7 +424,7 @@ func (r *Runner) ExtractRPA(rpaPath string) error {
 // DecompileRPYC decompiles an RPYC file to RPY.
 func (r *Runner) DecompileRPYC(rpycPath string) error {
 	if err := r.SetupUnrpyc(); err != nil {
-		return fmt.Errorf("failed to setup unrpyc: %w", err)
+		return fmt.Errorf("無法設定 unrpyc：%w", err)
 	}
 
 	unrpycPath := filepath.Join(r.TempDir, "unrpyc.py")
@@ -361,17 +439,16 @@ func (r *Runner) DecompileRPYC(rpycPath string) error {
 	cmd := exec.Command(r.PythonExe, args...)
 	cmd.Dir = filepath.Dir(rpycPath)
 	cmd.Env = env
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	return cmd.Run()
+	_, err := runWithLocalizedOutput(cmd)
+	return err
 }
 
 // DecompileAllRPYC decompiles all RPYC files in the game directory.
 // Returns: success count, skipped count, failed count, error
 func (r *Runner) DecompileAllRPYC() (int, int, int, error) {
 	if err := r.SetupUnrpyc(); err != nil {
-		return 0, 0, 0, fmt.Errorf("failed to setup unrpyc: %w", err)
+		return 0, 0, 0, fmt.Errorf("無法設定 unrpyc：%w", err)
 	}
 
 	unrpycPath := filepath.Join(r.TempDir, "unrpyc.py")
@@ -406,20 +483,19 @@ func (r *Runner) DecompileAllRPYC() (int, int, int, error) {
 			if relDir == "" {
 				relDir = "."
 			}
-			fmt.Printf("  Working in: '%s'\n", relDir)
+			fmt.Printf("  目前目錄：'%s'\n", relDir)
 		}
 
 		// Check if rpy already exists
 		rpyPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".rpy"
 		if _, err := os.Stat(rpyPath); err == nil {
-			// Match batch script output: "filename.rpy" already exists - skipped
-			fmt.Printf("    \"%s.rpy\" already exists - skipped\n", nameWithoutExt)
+			fmt.Printf("    \"%s.rpy\" 已存在，略過\n", nameWithoutExt)
 			skipped++
 			return nil
 		}
 
 		// Show decompiling message with file size (like batch script)
-		fmt.Printf("    + Decompiling \"%s\" - %d bytes\n", baseName, info.Size())
+		fmt.Printf("    + 正在反編譯 \"%s\" - %d bytes\n", baseName, info.Size())
 
 		args := []string{"-O", unrpycPath}
 		if !r.IsPython3 {
@@ -436,16 +512,16 @@ func (r *Runner) DecompileAllRPYC() (int, int, int, error) {
 			if _, err := os.Stat(rpyPath); err == nil {
 				success++
 			} else {
-				fmt.Printf("    - Failed to create RPY file: %s.rpy not found.\n", nameWithoutExt)
+				fmt.Printf("    - 無法建立 RPY 檔案：找不到 %s.rpy。\n", nameWithoutExt)
 				if len(output) > 0 {
-					fmt.Printf("    Output:\n%s\n", string(output))
+					fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
 				}
 				failed++
 			}
 		} else {
-			fmt.Printf("    - Failed to decompile \"%s\". Error: %v\n", baseName, err)
+			fmt.Printf("    - 反編譯 \"%s\" 失敗。錯誤：%v\n", baseName, err)
 			if len(output) > 0 {
-				fmt.Printf("    Output:\n%s\n", string(output))
+				fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
 			}
 			failed++
 		}
