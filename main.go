@@ -310,7 +310,15 @@ func handleExtractRPA(game *detector.GameInfo, clean bool) {
 
 	for _, rpaPath := range game.RPAFiles {
 		relPath, _ := filepath.Rel(game.GameDir, rpaPath)
-		info, _ := os.Stat(rpaPath)
+		info, statErr := os.Stat(rpaPath)
+		if statErr != nil || info == nil {
+			if statErr == nil {
+				statErr = fmt.Errorf("無法取得檔案資訊")
+			}
+			fmt.Printf("    ! 無法讀取檔案資訊 %s：%v\n", relPath, statErr)
+			totalErrors++
+			continue
+		}
 		fmt.Printf("    + 正在解包 『%s』 - %s\n", relPath, utils.FormatBytes(info.Size()))
 
 		if err := r.ExtractRPA(rpaPath); err != nil {

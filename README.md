@@ -1,16 +1,18 @@
 # UnRen-Go
 
-Cross-platform Ren'Py game utility - Ported from [Unren 1.0.11d](https://f95zone.to/threads/unren-bat-v1-0-11d-rpa-extractor-rpyc-decompiler-console-developer-menu-enabler.3083/)
+Cross-platform Ren'Py game utility, ported from [UnRen 1.0.11d](https://f95zone.to/threads/unren-bat-v1-0-11d-rpa-extractor-rpyc-decompiler-console-developer-menu-enabler.3083/).
 
 ## Features
 
-- **RPA Extraction**: Extract files from `.rpa` archives (RPA-2.0, RPA-3.0, and RPA-3.2)
-- **Enable Console**: Developer console (SHIFT+O) and dev menu (SHIFT+D)
-- **Quick Save/Load**: F5/F9 hotkeys for quick save and load
-- **Skip Unseen**: Force-enable skipping of all text including unseen content
-- **Rollback**: Enable infinite rollback with scroll wheel
+- Extract `.rpa` archives (RPA-2.0, RPA-3.0, and RPA-3.2).
+- Decompile `.rpyc` files into `.rpy` source files using the game's bundled Python interpreter.
+- Enable the developer console (SHIFT+O) and developer menu (SHIFT+D).
+- Enable quick save/load hotkeys (F5/F9).
+- Enable skipping unseen content.
+- Enable extended rollback.
+- Optional source cleanup after successful extraction/decompilation.
 
-## Installation
+## Build and download
 
 ### Build from source
 
@@ -18,20 +20,20 @@ Cross-platform Ren'Py game utility - Ported from [Unren 1.0.11d](https://f95zone
 go build -o unren-go .
 ```
 
-### Download binaries from GitHub Actions
+The project targets Go 1.25.6. The `build.sh` script cross-compiles the supported Windows, Linux, and macOS targets.
 
-This personal build runs when code is pushed to the `gofix` branch, or when the workflow is started manually.
+### Download GitHub Actions artifacts
+
+The personal build workflow runs when code is pushed to the `gofix_2` branch, or when started manually.
 
 1. Open the repository's **Actions** tab.
 2. Select the latest successful **Build (Actions Artifact)** run.
-3. Download the `UnRen-Go-gofix-<commit-sha>` artifact.
-4. Extract the downloaded ZIP and select the binary for your platform.
+3. Download the `UnRen-Go-gofix_2-<commit-sha>` artifact.
+4. Extract the ZIP and select the binary for your platform.
 
-The artifact contains binaries for Windows, Linux, and macOS. This workflow does not create GitHub Releases, tags, or release assets. Actions artifacts are retained for 30 days.
+The workflow uploads Windows x64/x86/ARM64, Linux x64/x86/ARM64/ARM, and macOS x64/ARM64 binaries. It does not create GitHub Releases, tags, or release assets. Actions artifacts are retained for 30 days.
 
 ## Usage
-
-### Interactive Mode
 
 Run without arguments to launch the interactive menu:
 
@@ -39,41 +41,42 @@ Run without arguments to launch the interactive menu:
 ./unren-go
 ```
 
-If the game files aren't found, you'll see a **Recovery Menu** allowing you to browse directories interactively to locate the game.
+If the game files are not found, the recovery menu lets you browse to the game directory.
 
-### Automation & CLI Mode
-
-Run with flags to perform actions immediately (no menu):
+### Command-line mode
 
 ```bash
-# Extract RPA and Decompile RPYC
+# Extract RPA and decompile RPYC.
 ./unren-go -e -d /path/to/game
 
-# Perform ALL actions (Extract + Decompile + Apply all patches)
+# Run extraction, decompilation, and all patch options.
 ./unren-go --all /path/to/game
 
-# Enable specific features
+# Enable selected options.
 ./unren-go --console --skip /path/to/game
+
+# Remove source archives/compiled scripts only after successful processing.
+./unren-go --all --clean /path/to/game
 ```
 
-### Options
-
 | Flag | Short | Description |
-|------|-------|-------------|
-| `--extract` | `-e` | Extract RPA packages |
-| `--decompile` | `-d` | Decompile RPYC files |
-| `--clean` | `-c` | Cleanup processed source files |
-| `--all` | `-a` | Perform all actions |
-| `--console` | | Enable Developer Console/Menu |
-| `--quicksave` | | Enable Quick Save/Load |
-| `--skip` | | Force enable skipping unseen content |
-| `--rollback` | | Enable infinite rollback |
-| `--help` | `-h` | Show help and valid usages |
-| `--version` | `-v` | Show version info |
+|---|---|---|
+| `--extract` | `-e` | Extract RPA archives. |
+| `--decompile` | `-d` | Decompile RPYC files. |
+| `--clean` | `-c` | Remove processed source files after successful processing. |
+| `--all` | `-a` | Extract, decompile, and enable all patches. |
+| `--console` | | Enable developer console/menu. |
+| `--quicksave` | | Enable quick save/load. |
+| `--skip` | | Enable skipping unseen content. |
+| `--rollback` | | Enable extended rollback. |
+| `--help` | `-h` | Show help and usage. |
+| `--version` | `-v` | Show version information. |
+
+`--clean` does not delete RPYC files that were skipped, failed, or not processed. It only removes RPYC sources that this run successfully decompiled and verified. RPA archives are removed only when all RPA extraction operations complete without errors.
 
 ## License
 
-MIT License
+MIT License.
 
 ## Credits
 
