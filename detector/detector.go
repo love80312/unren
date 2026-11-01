@@ -123,7 +123,7 @@ func detectRenPyVersion(info *GameInfo) int {
 	}
 
 	// Check for specific version files
-	if utils.FileExists(filepath.Join(info.RootDir, "renpy", "__pycache__")) {
+	if utils.DirExists(filepath.Join(info.RootDir, "renpy", "__pycache__")) {
 		// __pycache__ indicates Python 3, so Ren'Py 8
 		return 8
 	}
