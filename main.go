@@ -116,7 +116,7 @@ func main() {
 			fmt.Printf("   ! 錯誤：找不到遊戲檔案，無法繼續。\n")
 			fmt.Printf("     路徑：%s\n", gameDir)
 			fmt.Println()
-			return
+			os.Exit(1)
 		}
 
 		utils.ClearTerminal()
@@ -165,29 +165,39 @@ func main() {
 
 	if automationMode {
 		if all {
-			handleAllOptions(game, clean)
+			if !handleAllOptions(game, clean) {
+				os.Exit(1)
+			}
 			return
 		}
 
+		ok := true
 		if extract {
-			handleExtractRPA(game, clean)
+			if !handleExtractRPA(game, clean) {
+				ok = false
+			}
 			fmt.Println()
 		}
 		if decompile {
-			handleDecompileRPYC(game, clean)
+			if !handleDecompileRPYC(game, clean) {
+				ok = false
+			}
 			fmt.Println()
 		}
-		if console {
-			handleEnableConsole(game)
+		if console && !handleEnableConsole(game) {
+			ok = false
 		}
-		if quicksave {
-			handleEnableQuickSave(game)
+		if quicksave && !handleEnableQuickSave(game) {
+			ok = false
 		}
-		if skip {
-			handleEnableSkip(game)
+		if skip && !handleEnableSkip(game) {
+			ok = false
 		}
-		if rollback {
-			handleEnableRollback(game)
+		if rollback && !handleEnableRollback(game) {
+			ok = false
+		}
+		if !ok {
+			os.Exit(1)
 		}
 		return
 	}
@@ -289,17 +299,17 @@ func printMenu() {
 	fmt.Println()
 }
 
-func handleExtractRPA(game *detector.GameInfo, clean bool) {
+func handleExtractRPA(game *detector.GameInfo, clean bool) bool {
 	if !game.HasRPAFiles() {
 		fmt.Println("  沒有找到可解包的 .rpa 檔案。")
-		return
+		return true
 	}
 
 	r, err := runner.NewRunner(game)
 	if err != nil {
 		fmt.Printf("    ! 找不到 Python 直譯器：%v\n", err)
 		fmt.Println("      解包 RPA 需要遊戲內建的 Python 直譯器。")
-		return
+		return false
 	}
 	defer r.Cleanup()
 
@@ -342,6 +352,7 @@ func handleExtractRPA(game *detector.GameInfo, clean bool) {
 					cleaned++
 				} else {
 					fmt.Printf("    ! 刪除失敗 %s：%v\n", filepath.Base(rpaPath), err)
+					totalErrors++
 				}
 			}
 			fmt.Printf("    已刪除 %d 個 .rpa 檔案。\n", cleaned)
@@ -352,12 +363,13 @@ func handleExtractRPA(game *detector.GameInfo, clean bool) {
 	if found, err := utils.FindFilesWithExtension(game.GameDir, ".rpyc"); err == nil {
 		game.RPYCFiles = found
 	}
+	return totalErrors == 0
 }
 
-func handleDecompileRPYC(game *detector.GameInfo, clean bool) {
+func handleDecompileRPYC(game *detector.GameInfo, clean bool) bool {
 	if !game.HasRPYCFiles() {
 		fmt.Println("  沒有找到可反編譯的 .rpyc 檔案。")
-		return
+		return true
 	}
 
 	fmt.Println("  設定反編譯器中...")
@@ -366,7 +378,7 @@ func handleDecompileRPYC(game *detector.GameInfo, clean bool) {
 	if err != nil {
 		fmt.Printf("    ! 找不到 Python 直譯器：%v\n", err)
 		fmt.Println("    ! 反編譯 RPYC 需要遊戲內建的 Python 直譯器。")
-		return
+		return false
 	}
 	defer r.Cleanup()
 
@@ -409,6 +421,7 @@ func handleDecompileRPYC(game *detector.GameInfo, clean bool) {
 		fmt.Println()
 	}
 
+	cleanupErrors := 0
 	if clean && err == nil && failed == 0 {
 		fmt.Println()
 		fmt.Println("  清理 RPYC 檔案中...")
@@ -420,6 +433,7 @@ func handleDecompileRPYC(game *detector.GameInfo, clean bool) {
 				cleaned++
 			} else {
 				fmt.Printf("    ! 刪除失敗 %s：%v\n", filepath.Base(rpycPath), err)
+				cleanupErrors++
 			}
 		}
 		fmt.Printf("    已刪除 %d 個 .rpyc 檔案。\n", cleaned)
@@ -431,75 +445,98 @@ func handleDecompileRPYC(game *detector.GameInfo, clean bool) {
 			fmt.Println("  ! 因反編譯流程發生錯誤，略過清理步驟。")
 		}
 	}
+	return err == nil && failed == 0 && cleanupErrors == 0
 }
 
-func handleEnableConsole(game *detector.GameInfo) {
+func handleEnableConsole(game *detector.GameInfo) bool {
 	fmt.Println("  建立開發者／主控台設定檔...")
 
 	p := patcher.New(game.GameDir, nil)
 	if err := p.EnableConsole(); err != nil {
 		fmt.Printf("    ! 失敗：%v\n", err)
-		return
+		return false
 	}
 
 	fmt.Println("    + 主控台：SHIFT+O")
 	fmt.Println("    + 開發者選單：SHIFT+D")
+	return true
 }
 
-func handleEnableQuickSave(game *detector.GameInfo) {
+func handleEnableQuickSave(game *detector.GameInfo) bool {
 	fmt.Println("  建立快速存檔／讀檔設定檔...")
 
 	p := patcher.New(game.GameDir, nil)
 	if err := p.EnableQuickSave(); err != nil {
 		fmt.Printf("    ! 失敗：%v\n", err)
-		return
+		return false
 	}
 
 	fmt.Println("    預設快速鍵：")
 	fmt.Println("    + 快速存檔：F5")
 	fmt.Println("    + 快速讀檔：F9")
+	return true
 }
 
-func handleEnableSkip(game *detector.GameInfo) {
+func handleEnableSkip(game *detector.GameInfo) bool {
 	fmt.Println("  建立略過設定檔...")
 
 	p := patcher.New(game.GameDir, nil)
 	if err := p.EnableSkip(); err != nil {
 		fmt.Printf("    ! 失敗：%v\n", err)
-		return
+		return false
 	}
 
 	fmt.Println("    + 現在可使用 TAB 與 CTRL 鍵略過所有文字")
+	return true
 }
 
-func handleEnableRollback(game *detector.GameInfo) {
+func handleEnableRollback(game *detector.GameInfo) bool {
 	fmt.Println("  建立回滾設定檔...")
 
 	p := patcher.New(game.GameDir, nil)
 	if err := p.EnableRollback(); err != nil {
 		fmt.Printf("    ! 失敗：%v\n", err)
-		return
+		return false
 	}
 
 	fmt.Println("    + 現在可使用滾輪進行回滾")
+	return true
 }
 
-func handleOptionsGroup1(game *detector.GameInfo) {
-	handleEnableConsole(game)
+func handleOptionsGroup1(game *detector.GameInfo) bool {
+	ok := true
+	if !handleEnableConsole(game) {
+		ok = false
+	}
 	fmt.Println()
-	handleEnableQuickSave(game)
+	if !handleEnableQuickSave(game) {
+		ok = false
+	}
 	fmt.Println()
-	handleEnableSkip(game)
+	if !handleEnableSkip(game) {
+		ok = false
+	}
 	fmt.Println()
-	handleEnableRollback(game)
+	if !handleEnableRollback(game) {
+		ok = false
+	}
+	return ok
 }
 
-func handleAllOptions(game *detector.GameInfo, clean bool) {
-	handleExtractRPA(game, clean)
+func handleAllOptions(game *detector.GameInfo, clean bool) bool {
+	ok := true
+	if !handleExtractRPA(game, clean) {
+		ok = false
+	}
 	fmt.Println()
-	handleDecompileRPYC(game, clean)
+	if !handleDecompileRPYC(game, clean) {
+		ok = false
+	}
 	fmt.Println()
-	handleOptionsGroup1(game)
+	if !handleOptionsGroup1(game) {
+		ok = false
+	}
+	return ok
 }
 
 func readInput(prompt string) string {
