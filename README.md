@@ -1,8 +1,8 @@
-<!-- README.md revised with ChatGPT assistance on 2026-11-01. -->
+> **README 維護備註：** 本文件由 ChatGPT 協助修訂，日期：2026-11-01。
 
 # UnRen-Go
 
-Cross-platform Ren'Py game utility, ported from [UnRen 1.0.11d](https://f95zone.to/threads/unren-bat-v1-0-11d-rpa-extractor-rpyc-decompiler-console-developer-menu-enabler.3083/).
+Cross-platform Ren'Py game utility, ported from [UnRen 1.0.11d](https://f95zone.to/threads/unren-bat-rpa-extractor-rpyc-decompiler-console-developer-menu-enabler.3083/).
 
 This is the personal `gofix` branch. It provides RPA extraction, RPYC decompilation, and Ren'Py configuration patches.
 
@@ -100,10 +100,12 @@ In this branch, when the RPYC decompilation pass reports no failures, cleanup re
 
 This behavior is documented for future reference and has not been changed in this branch. Back up the game directory and do not use `--clean` until the cleanup behavior is intentionally revised. RPA cleanup is separate: RPA archives are removed only when all RPA extraction operations complete without errors.
 
-## License
-
-MIT License.
-
 ## Credits
 
-- [Sam](https://f95zone.to/members/sam.7899/) from the F95Zone Community.
+- **UnRen.bat:** [Sam](https://f95zone.to/members/sam.7899/) — the original UnRen 1.0.11d project this branch is ported from.
+- **RPYC decompiler:** [unrpyc](https://github.com/CensoredUsername/unrpyc) — copyright © 2012–2024 Yuri K. Schlesner, CensoredUsername, and Jackmcbarn. The bundled source retains its MIT license notice.
+- **RPA archive tool:** [rpatool](https://github.com/Shizmob/rpatool) by Shizmob. This project uses a modified extractor with additional archive-safety checks. The upstream rpatool repository provides the WTFPL v2 license.
+
+## License
+
+The bundled unrpyc source retains its MIT license notice. The rpatool-derived component follows the upstream WTFPL v2 license. This branch does not contain a repository-level `LICENSE` file, so these dependency licenses should not be interpreted as a single project-wide license.
