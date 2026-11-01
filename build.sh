@@ -1,53 +1,51 @@
-#!/bin/bash
-# Cross-platform build script for UnRen-Go
-# Builds for Windows, Linux, macOS on x64/x86/ARM architectures
+#!/usr/bin/env bash
+# Build UnRen-Go for all supported platforms.
+# The GitHub Actions workflow uploads the generated binaries as an artifact.
 
-VERSION="0.0.6"
+set -Eeuo pipefail
+
 OUTPUT_DIR="dist"
 BINARY_NAME="unren-go"
 
-mkdir -p "$OUTPUT_DIR"
-
-echo "Building UnRen-Go v$VERSION for all platforms..."
-echo ""
-
-# Build targets: GOOS/GOARCH combinations
-# Format: "os/arch[:output_suffix]"
+# GOOS GOARCH output suffix
 TARGETS=(
-    # Windows
-    "windows/amd64:windows-x64.exe"
-    "windows/386:windows-x86.exe"
-    "windows/arm64:windows-arm64.exe"
-    
-    # Linux
-    "linux/amd64:linux-x64"
-    "linux/386:linux-x86"
-    "linux/arm64:linux-arm64"
-    "linux/arm:linux-arm"  # For Raspberry Pi etc.
-    
-    # macOS
-    "darwin/amd64:macos-x64"
-    "darwin/arm64:macos-arm64"  # Apple Silicon
+    "windows amd64 windows-x64.exe"
+    "windows 386 windows-x86.exe"
+    "windows arm64 windows-arm64.exe"
+    "linux amd64 linux-x64"
+    "linux 386 linux-x86"
+    "linux arm64 linux-arm64"
+    "linux arm linux-arm"
+    "darwin amd64 macos-x64"
+    "darwin arm64 macos-arm64"
 )
 
+mkdir -p "$OUTPUT_DIR"
+
+# Remove previous outputs so stale binaries cannot be uploaded after a partial build.
+rm -f "$OUTPUT_DIR"/"$BINARY_NAME"-*
+
+echo "Building UnRen-Go for all supported platforms..."
+echo
+
 for target in "${TARGETS[@]}"; do
-    IFS=':' read -r platform suffix <<< "$target"
-    IFS='/' read -r goos goarch <<< "$platform"
-    
-    output="$OUTPUT_DIR/${BINARY_NAME}-${suffix}"
-    
-    echo "  Building $output..."
-    
-    CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -ldflags="-s -w" -o "$output" . 2>&1
-    
-    if [ $? -eq 0 ]; then
-        size=$(ls -lh "$output" | awk '{print $5}')
-        echo "    ✓ $output ($size)"
-    else
-        echo "    ✗ Failed to build $output"
+    read -r goos goarch suffix <<< "$target"
+    output="$OUTPUT_DIR/$BINARY_NAME-$suffix"
+
+    echo "Building $output ($goos/$goarch)..."
+
+    if ! env CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+        go build -trimpath -ldflags="-s -w" -o "$output" .; then
+        rm -f "$output"
+        echo "ERROR: Build failed for $goos/$goarch." >&2
+        exit 1
     fi
+
+    size=$(wc -c < "$output" | tr -d '[:space:]')
+    echo "OK: $output ($size bytes)"
+    echo
 done
 
-echo ""
-echo "Build complete! Binaries in $OUTPUT_DIR/"
-ls -la "$OUTPUT_DIR/"
+echo "Build completed successfully."
+echo "Generated binaries:"
+ls -lh "$OUTPUT_DIR"

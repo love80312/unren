@@ -1,6 +1,6 @@
 # UnRen-Go
 
-Cross-platform Ren'Py game utility - Ported from [Unren 1.0.11d](https://f95zone.to/threads/unren-bat-v1-0-11d-rpa-extractor-rpyc-decompiler-console-developer-menu-enabler.3083/) 
+Cross-platform Ren'Py game utility - Ported from [Unren 1.0.11d](https://f95zone.to/threads/unren-bat-v1-0-11d-rpa-extractor-rpyc-decompiler-console-developer-menu-enabler.3083/)
 
 ## Features
 
@@ -13,17 +13,28 @@ Cross-platform Ren'Py game utility - Ported from [Unren 1.0.11d](https://f95zone
 ## Installation
 
 ### Build from source
+
 ```bash
 go build -o unren-go .
 ```
 
-### Pre-built binaries
-Download from the [releases page](https://github.com/Cat-Ling/unren) for your platform:
+### Download binaries from GitHub Actions
+
+This personal build runs when code is pushed to the `gofix` branch, or when the workflow is started manually.
+
+1. Open the repository's **Actions** tab.
+2. Select the latest successful **Build (Actions Artifact)** run.
+3. Download the `UnRen-Go-gofix-<commit-sha>` artifact.
+4. Extract the downloaded ZIP and select the binary for your platform.
+
+The artifact contains binaries for Windows, Linux, and macOS. This workflow does not create GitHub Releases, tags, or release assets. Actions artifacts are retained for 30 days.
 
 ## Usage
 
 ### Interactive Mode
+
 Run without arguments to launch the interactive menu:
+
 ```bash
 ./unren-go
 ```
@@ -31,7 +42,9 @@ Run without arguments to launch the interactive menu:
 If the game files aren't found, you'll see a **Recovery Menu** allowing you to browse directories interactively to locate the game.
 
 ### Automation & CLI Mode
+
 Run with flags to perform actions immediately (no menu):
+
 ```bash
 # Extract RPA and Decompile RPYC
 ./unren-go -e -d /path/to/game
@@ -44,6 +57,7 @@ Run with flags to perform actions immediately (no menu):
 ```
 
 ### Options
+
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--extract` | `-e` | Extract RPA packages |
@@ -53,7 +67,7 @@ Run with flags to perform actions immediately (no menu):
 | `--console` | | Enable Developer Console/Menu |
 | `--quicksave` | | Enable Quick Save/Load |
 | `--skip` | | Force enable skipping unseen content |
-| `--rollback` | | Force enable infinite rollback |
+| `--rollback` | | Enable infinite rollback |
 | `--help` | `-h` | Show help and valid usages |
 | `--version` | `-v` | Show version info |
 
