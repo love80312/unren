@@ -456,10 +456,19 @@ func (r *Runner) DecompileRPYC(rpycPath string) error {
 }
 
 // DecompileAllRPYC decompiles all RPYC files in the game directory.
-// Returns: success count, skipped count, failed count, error
+// Returns: success count, skipped count, failed count, error.
+// This compatibility wrapper preserves the original method signature.
 func (r *Runner) DecompileAllRPYC() (int, int, int, error) {
+	success, skipped, failed, _, err := r.DecompileAllRPYCWithFiles()
+	return success, skipped, failed, err
+}
+
+// DecompileAllRPYCWithFiles decompiles all RPYC files and also returns the
+// source RPYC paths whose corresponding RPY outputs were newly created and
+// verified as regular files. Callers may remove only these returned paths.
+func (r *Runner) DecompileAllRPYCWithFiles() (int, int, int, []string, error) {
 	if err := r.SetupUnrpyc(); err != nil {
-		return 0, 0, 0, fmt.Errorf("無法設定 unrpyc：%w", err)
+		return 0, 0, 0, nil, fmt.Errorf("無法設定 unrpyc：%w", err)
 	}
 
 	unrpycPath := filepath.Join(r.TempDir, "unrpyc.py")
@@ -469,24 +478,28 @@ func (r *Runner) DecompileAllRPYC() (int, int, int, error) {
 	success := 0
 	skipped := 0
 	failed := 0
+	var succeededFiles []string
 	lastDir := ""
 
-	err := filepath.Walk(gameDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Continue on errors
+	walkErr := filepath.Walk(gameDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("無法存取路徑 %s：%w", path, walkErr)
+		}
+		if info == nil {
+			return fmt.Errorf("無法取得路徑資訊：%s", path)
 		}
 		if info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".rpyc") {
 			return nil
 		}
 
-		// Skip un.rpyc (special Ren'Py file)
+		// Skip un.rpyc (special Ren'Py file).
 		baseName := filepath.Base(path)
 		nameWithoutExt := strings.TrimSuffix(baseName, filepath.Ext(baseName))
 		if strings.ToLower(nameWithoutExt) == "un" {
 			return nil
 		}
 
-		// Show directory change (like batch script)
+		// Show directory change (like batch script).
 		currentDir := filepath.Dir(path)
 		if currentDir != lastDir {
 			lastDir = currentDir
@@ -497,15 +510,18 @@ func (r *Runner) DecompileAllRPYC() (int, int, int, error) {
 			fmt.Printf("  目前目錄：'%s'\n", relDir)
 		}
 
-		// Check if rpy already exists
+		// Never treat a pre-existing output (including a symlink) as a newly
+		// decompiled file. It must not be eligible for --clean removal.
 		rpyPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".rpy"
-		if _, err := os.Stat(rpyPath); err == nil {
+		if _, statErr := os.Lstat(rpyPath); statErr == nil {
 			fmt.Printf("    \"%s.rpy\" 已存在，略過\n", nameWithoutExt)
 			skipped++
 			return nil
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("無法檢查輸出檔案 %s：%w", rpyPath, statErr)
 		}
 
-		// Show decompiling message with file size (like batch script)
+		// Show decompiling message with file size (like batch script).
 		fmt.Printf("    + 正在反編譯 \"%s\" - %d bytes\n", baseName, info.Size())
 
 		args := []string{"-O", unrpycPath}
@@ -518,19 +534,22 @@ func (r *Runner) DecompileAllRPYC() (int, int, int, error) {
 		cmd.Dir = filepath.Dir(path)
 		cmd.Env = env
 
-		if output, err := cmd.CombinedOutput(); err == nil {
-			// Verify output file was created
-			if _, err := os.Stat(rpyPath); err == nil {
+		if output, cmdErr := cmd.CombinedOutput(); cmdErr == nil {
+			// A zero exit status alone is insufficient: only a newly created
+			// regular RPY file qualifies for source cleanup.
+			outInfo, statErr := os.Lstat(rpyPath)
+			if statErr == nil && outInfo.Mode().IsRegular() {
 				success++
+				succeededFiles = append(succeededFiles, path)
 			} else {
-				fmt.Printf("    - 無法建立 RPY 檔案：找不到 %s.rpy。\n", nameWithoutExt)
+				fmt.Printf("    - 無法建立有效的 RPY 檔案：找不到一般檔案 %s.rpy。\n", nameWithoutExt)
 				if len(output) > 0 {
 					fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
 				}
 				failed++
 			}
 		} else {
-			fmt.Printf("    - 反編譯 \"%s\" 失敗。錯誤：%v\n", baseName, err)
+			fmt.Printf("    - 反編譯 \"%s\" 失敗。錯誤：%v\n", baseName, cmdErr)
 			if len(output) > 0 {
 				fmt.Printf("    子程序輸出：\n%s\n", localizeToolOutput(output))
 			}
@@ -540,5 +559,5 @@ func (r *Runner) DecompileAllRPYC() (int, int, int, error) {
 		return nil
 	})
 
-	return success, skipped, failed, err
+	return success, skipped, failed, succeededFiles, walkErr
 }
