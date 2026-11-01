@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// ClearTerminal clears the terminal screen in a cross-platform way
+// ClearTerminal clears the terminal screen in a cross-platform way.
 func ClearTerminal() {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
@@ -18,10 +18,10 @@ func ClearTerminal() {
 		cmd = exec.Command("clear")
 	}
 	cmd.Stdout = os.Stdout
-	cmd.Run()
+	_ = cmd.Run()
 }
 
-// Colors for terminal output
+// Colors for terminal output.
 const (
 	ColorReset  = "\033[0m"
 	ColorRed    = "\033[31m"
@@ -33,93 +33,83 @@ const (
 	ColorWhite  = "\033[37m"
 )
 
-// supportsColor checks if the terminal supports ANSI colors
+// supportsColor checks if the terminal supports ANSI colors.
 func supportsColor() bool {
-	// Windows cmd.exe doesn't support ANSI by default, but modern terminals do
 	if runtime.GOOS == "windows" {
-		// Check for Windows Terminal, VS Code, or other modern terminals
-		if os.Getenv("WT_SESSION") != "" || os.Getenv("TERM_PROGRAM") != "" {
-			return true
-		}
-		return false
+		return os.Getenv("WT_SESSION") != "" || os.Getenv("TERM_PROGRAM") != ""
 	}
-	// Unix-like systems generally support colors
 	return os.Getenv("NO_COLOR") == ""
 }
 
-// ColorPrint prints colored text if supported
+// ColorPrint prints colored text if supported.
 func ColorPrint(color, text string) {
 	if supportsColor() {
 		fmt.Print(color + text + ColorReset)
-	} else {
-		fmt.Print(text)
+		return
 	}
+	fmt.Print(text)
 }
 
-// ColorPrintln prints colored text with newline if supported
+// ColorPrintln prints colored text with newline if supported.
 func ColorPrintln(color, text string) {
 	if supportsColor() {
 		fmt.Println(color + text + ColorReset)
-	} else {
-		fmt.Println(text)
+		return
 	}
+	fmt.Println(text)
 }
 
-// PrintError prints an error message in red
+// PrintError prints an error message in red.
 func PrintError(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	ColorPrintln(ColorRed, "ERROR: "+msg)
+	ColorPrintln(ColorRed, "ERROR: "+fmt.Sprintf(format, args...))
 }
 
-// PrintSuccess prints a success message in green
+// PrintSuccess prints a success message in green.
 func PrintSuccess(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	ColorPrintln(ColorGreen, msg)
+	ColorPrintln(ColorGreen, fmt.Sprintf(format, args...))
 }
 
-// PrintWarning prints a warning message in yellow
+// PrintWarning prints a warning message in yellow.
 func PrintWarning(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	ColorPrintln(ColorYellow, "WARNING: "+msg)
+	ColorPrintln(ColorYellow, "WARNING: "+fmt.Sprintf(format, args...))
 }
 
-// PrintInfo prints an info message in cyan
+// PrintInfo prints an info message in cyan.
 func PrintInfo(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	ColorPrintln(ColorCyan, msg)
+	ColorPrintln(ColorCyan, fmt.Sprintf(format, args...))
 }
 
-// NormalizePath normalizes a path for the current OS
+// NormalizePath normalizes a path for the current OS.
 func NormalizePath(path string) string {
-	// Convert all separators to the current OS separator
-	path = filepath.Clean(path)
-	return path
+	return filepath.Clean(path)
 }
 
-// EnsureDir creates a directory if it doesn't exist
+// EnsureDir creates a directory if it doesn't exist.
 func EnsureDir(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
-// FileExists checks if a file exists and is not a directory
+// FileExists reports whether path resolves to an existing non-directory file.
+// Stat can return a nil FileInfo for errors other than not-exist; always check
+// the error before dereferencing the returned FileInfo.
 func FileExists(path string) bool {
 	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
+	if err != nil || info == nil {
 		return false
 	}
 	return !info.IsDir()
 }
 
-// DirExists checks if a directory exists
+// DirExists reports whether path resolves to an existing directory.
 func DirExists(path string) bool {
 	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
+	if err != nil || info == nil {
 		return false
 	}
 	return info.IsDir()
 }
 
-// FindFilesWithExtension finds all files with a given extension in a directory (recursive)
+// FindFilesWithExtension finds files with the given extension recursively.
 func FindFilesWithExtension(dir, ext string) ([]string, error) {
 	var files []string
 	ext = strings.ToLower(ext)
@@ -131,16 +121,18 @@ func FindFilesWithExtension(dir, ext string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		if info == nil {
+			return fmt.Errorf("無法取得路徑資訊：%s", path)
+		}
 		if !info.IsDir() && strings.ToLower(filepath.Ext(path)) == ext {
 			files = append(files, path)
 		}
 		return nil
 	})
-
 	return files, err
 }
 
-// FormatBytes formats bytes into human-readable format
+// FormatBytes formats bytes into a human-readable representation.
 func FormatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
