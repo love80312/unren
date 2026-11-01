@@ -87,7 +87,11 @@ def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
 
     decoder = zlib.decompressobj()
     chunks = []
-    pending = data
+    # Python 2.7 has no decompressobj.eof attribute. Append a small sentinel
+    # so unused_data proves that the single zlib stream reached its end. This
+    # avoids calling zlib.decompress(data), which has no output-size limit.
+    legacy_end_marker = b"\x00UNREN_ZLIB_END\x00" if not hasattr(decoder, "eof") else b""
+    pending = data + legacy_end_marker
     total = 0
     while pending:
         piece = decoder.decompress(pending, limit - total + 1)
@@ -108,21 +112,19 @@ def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
 
     # An RPA index is exactly one zlib stream. Reject trailing bytes and
     # concatenated streams instead of silently accepting an ambiguous index.
-    if getattr(decoder, "unused_data", b""):
-        raise ValueError("trailing data after compressed RPA index")
-
-    if hasattr(decoder, "eof"):
+    unused_data = getattr(decoder, "unused_data", b"")
+    if legacy_end_marker:
+        # On Python 2.7 the marker must be the only unused input. A truncated
+        # stream consumes it (or raises), while trailing bytes remain before it.
+        if unused_data != legacy_end_marker:
+            if unused_data and unused_data.endswith(legacy_end_marker):
+                raise ValueError("trailing data after compressed RPA index")
+            raise ValueError("truncated or invalid compressed RPA index")
+    else:
+        if unused_data:
+            raise ValueError("trailing data after compressed RPA index")
         if not decoder.eof:
             raise ValueError("truncated compressed RPA index")
-    else:
-        # Python 2.7 has no decompressobj.eof. The streaming pass has already
-        # bounded output; validate completion using the legacy zlib API.
-        try:
-            verified = zlib.decompress(data)
-        except zlib.error:
-            raise ValueError("truncated or invalid compressed RPA index")
-        if len(verified) != total:
-            raise ValueError("incomplete compressed RPA index")
 
     return b"".join(chunks)
 
