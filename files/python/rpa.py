@@ -2,6 +2,7 @@
 # This is used only when the primary extractor cannot process an archive.
 from __future__ import print_function
 
+import ctypes
 import io
 import mmap
 import os
@@ -11,6 +12,7 @@ except ImportError:
     import pickle
 import re
 import sys
+import tempfile
 import zlib
 
 try:
@@ -25,17 +27,47 @@ try:
 except NameError:
     binary_type = str
 
+MAX_INDEX_BYTES = 512 * 1024 * 1024
+COPY_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+def _safe_empty_bytes(*args):
+    # Protocol-2 pickle represents an empty bytes value as bytes().
+    if args:
+        raise pickle.UnpicklingError("invalid bytes constructor in RPA index")
+    return b""
+
+
+def _safe_codec_encode(value, encoding="latin1", errors="strict"):
+    # Protocol-2 pickle represents non-empty bytes via _codecs.encode.
+    # Restrict the codec to latin1: this is the representation used for
+    # Python 2 byte strings and cannot import or invoke arbitrary codecs.
+    if not isinstance(value, text_type) or str(encoding).lower() not in ("latin1", "latin-1"):
+        raise pickle.UnpicklingError("unsupported byte-string encoding in RPA index")
+    if errors != "strict":
+        raise pickle.UnpicklingError("unsupported byte-string error mode in RPA index")
+    return value.encode("latin1", "strict")
+
+
+def _restricted_global(module, name):
+    if module in ("__builtin__", "builtins") and name == "bytes":
+        return _safe_empty_bytes
+    if module == "_codecs" and name == "encode":
+        return _safe_codec_encode
+    raise pickle.UnpicklingError(
+        "global objects are not permitted in an RPA index: %s.%s" % (module, name)
+    )
+
 
 class RestrictedUnpickler(pickle.Unpickler):
-    def find_class(self, module, name):
-        raise pickle.UnpicklingError(
-            "global objects are not permitted in an RPA index: %s.%s" % (module, name)
-        )
+    """Unpickler for primitive RPA index data and two constrained byte encoders."""
 
+    def find_class(self, module, name):
+        return _restricted_global(module, name)
+
+    # Python 2 calls find_global instead of find_class.
     def find_global(self, module, name):
-        raise pickle.UnpicklingError(
-            "global objects are not permitted in an RPA index: %s.%s" % (module, name)
-        )
+        return _restricted_global(module, name)
 
 
 def safe_unpickle(data):
@@ -44,10 +76,8 @@ def safe_unpickle(data):
         return RestrictedUnpickler(stream, encoding="latin1").load()
     return RestrictedUnpickler(stream).load()
 
-MAX_INDEX_BYTES = 512 * 1024 * 1024
 
 def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
-    """Decompress an RPA index with an upper bound on expanded size."""
     decoder = zlib.decompressobj()
     chunks = []
     pending = data
@@ -124,6 +154,26 @@ def safe_output_path(root, archive_name):
     return candidate
 
 
+def replace_file(source, destination):
+    """Replace an output file after a complete extraction has succeeded."""
+    if hasattr(os, "replace"):
+        os.replace(source, destination)
+        return
+    if os.name == "nt":
+        def as_unicode(path):
+            if isinstance(path, text_type):
+                return path
+            return path.decode(sys.getfilesystemencoding() or "mbcs")
+        move_file = ctypes.windll.kernel32.MoveFileExW
+        move_file.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint)
+        move_file.restype = ctypes.c_int
+        flags = 0x00000001 | 0x00000008  # REPLACE_EXISTING | WRITE_THROUGH
+        if not move_file(as_unicode(source), as_unicode(destination), flags):
+            raise ctypes.WinError()
+        return
+    os.rename(source, destination)
+
+
 class RPA(object):
     def __init__(self, filename):
         self.filename = filename
@@ -132,7 +182,6 @@ class RPA(object):
             self.mm = mmap.mmap(self.file.fileno(), 0, access=mmap.ACCESS_READ)
             self.index_offset, self.key = self.load_index_header()
             self.index = self.load_index()
-            self.files = self.build_file_set()
         except Exception:
             if hasattr(self, "mm"):
                 try:
@@ -182,29 +231,41 @@ class RPA(object):
                     raise ValueError("RPA offsets and lengths must be integers")
                 offset, length = block[0] ^ self.key, block[1] ^ self.key
                 prefix = block[2] if len(block) == 3 else (b"" if sys.version_info[0] >= 3 else "")
-                if offset < 0 or length < 0 or offset > self.index_offset or length > self.index_offset - offset:
-                    raise ValueError("RPA data block points outside the archive data region")
                 if len(block) == 3 and not isinstance(prefix, (text_type, binary_type)):
                     raise ValueError("invalid prefix value in RPA index")
-                if len(prefix) > length:
-                    raise ValueError("RPA prefix is longer than its data block")
                 if isinstance(prefix, text_type) and sys.version_info[0] >= 3:
                     prefix = prefix.encode("latin1")
+                # The indexed length is physical data length. The optional
+                # prefix is a separate virtual segment prepended before it.
+                if (offset < 0 or length < 0 or offset > self.index_offset or
+                        length > self.index_offset - offset):
+                    raise ValueError("RPA data block points outside the archive data region")
                 checked.append((offset, length, prefix))
             normalized[name] = checked
         return normalized
 
-    def build_file_set(self):
-        result = {}
-        for name, blocks in self.index.items():
-            if not blocks:
-                raise ValueError("archive entry has no data blocks")
-            offset, length, prefix = blocks[0]
+    def list(self):
+        return list(self.index.keys())
+
+    def write_to(self, archive_name, output, chunk_size=COPY_CHUNK_BYTES):
+        """Stream every block to output without caching archive payloads in RAM."""
+        blocks = self.index.get(archive_name)
+        if not blocks:
+            raise ValueError("archive entry does not exist or has no data blocks")
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+
+        for offset, length, prefix in blocks:
             if prefix:
-                # The legacy fallback historically did not support prefixes.
-                raise ValueError("fallback extractor cannot process prefixed RPA blocks")
-            result[name] = self.mm[offset:offset + length]
-        return result
+                output.write(prefix)
+            remaining = length
+            self.mm.seek(offset)
+            while remaining:
+                data = self.mm.read(min(chunk_size, remaining))
+                if not data:
+                    raise ValueError("truncated data block in RPA archive")
+                output.write(data)
+                remaining -= len(data)
 
     def close(self):
         try:
@@ -217,14 +278,27 @@ def extract(filename):
     archive = RPA(filename)
     try:
         root = os.getcwd()
-        for archive_name, contents in archive.files.items():
-            destination = safe_output_path(root, archive_name)
-            parent = os.path.dirname(destination)
-            if not os.path.isdir(parent):
-                os.makedirs(parent)
-            destination = safe_output_path(root, archive_name)
-            with open(destination, "wb") as output:
-                output.write(contents)
+        for archive_name in archive.list():
+            temp_path = None
+            try:
+                destination = safe_output_path(root, archive_name)
+                parent = os.path.dirname(destination)
+                if not os.path.isdir(parent):
+                    os.makedirs(parent)
+                destination = safe_output_path(root, archive_name)
+
+                fd, temp_path = tempfile.mkstemp(prefix=".unren-", suffix=".tmp", dir=parent)
+                with os.fdopen(fd, "wb") as output:
+                    archive.write_to(archive_name, output)
+                    output.flush()
+                replace_file(temp_path, destination)
+                temp_path = None
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
     finally:
         archive.close()
 
