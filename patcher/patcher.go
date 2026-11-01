@@ -3,6 +3,7 @@
 package patcher
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,7 +27,7 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Patcher creates .rpy modification files for Ren'Py games.
+// Patcher creates .rpy modification files for a Ren'Py game.
 type Patcher struct {
 	gameDir string
 	config  *Config
@@ -113,7 +114,8 @@ func PatchFiles() []string {
 	}
 }
 
-// RemoveAll removes all unren patch files from the game directory.
+// RemoveAll removes UnRen patch files. It intentionally does not delete .org
+// backups; those are user data and can be restored manually.
 func (p *Patcher) RemoveAll() error {
 	for _, f := range PatchFiles() {
 		path := filepath.Join(p.gameDir, f)
@@ -132,17 +134,127 @@ func (p *Patcher) removeIfExists(path string) error {
 	return nil
 }
 
-// writeFile writes content to a file in the game directory.
-// It removes any existing file first to ensure clean state.
+// writeFile preserves an existing file as <name>.org before replacing it.
+// If that backup already exists, only an identical UnRen output is accepted;
+// modified or ambiguous files are left untouched for manual review.
 func (p *Patcher) writeFile(filename string, content []byte) error {
-	path := filepath.Join(p.gameDir, filename)
-
-	// Remove existing file if present
-	_ = p.removeIfExists(path)
-
-	if err := os.WriteFile(path, content, 0644); err != nil {
-		return fmt.Errorf("無法寫入 %s：%w", filename, err)
+	if p.gameDir == "" {
+		return fmt.Errorf("尚未設定遊戲目錄")
+	}
+	if err := os.MkdirAll(p.gameDir, 0755); err != nil {
+		return fmt.Errorf("無法建立遊戲目錄：%w", err)
 	}
 
+	path := filepath.Join(p.gameDir, filename)
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("拒絕覆寫符號連結：%s", filename)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("目標不是一般檔案，拒絕覆寫：%s", filename)
+		}
+
+		existing, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("無法讀取既有檔案 %s：%w", filename, readErr)
+		}
+		if bytes.Equal(existing, content) {
+			// Running the same option repeatedly is harmless and does not
+			// replace or alter the original backup.
+			return nil
+		}
+
+		backupPath := path + ".org"
+		backupInfo, backupErr := os.Lstat(backupPath)
+		if backupErr == nil {
+			if backupInfo.Mode()&os.ModeSymlink != 0 || !backupInfo.Mode().IsRegular() {
+				return fmt.Errorf("備份路徑不是一般檔案，拒絕使用：%s", backupPath)
+			}
+			backupContents, readErr := os.ReadFile(backupPath)
+			if readErr != nil {
+				return fmt.Errorf("無法讀取備份檔 %s：%w", backupPath, readErr)
+			}
+			if !bytes.Equal(existing, backupContents) {
+				return fmt.Errorf("備份檔已存在，且目前檔案與備份內容不同；為避免覆蓋使用者修改，已保留原檔：%s", backupPath)
+			}
+			// Recovery case: an earlier run created the backup but stopped
+			// before replacing the original. The original and backup still match.
+		} else if !os.IsNotExist(backupErr) {
+			return fmt.Errorf("無法檢查備份檔 %s：%w", backupPath, backupErr)
+		} else {
+			if err := writeBackupExclusive(backupPath, existing, info.Mode().Perm()); err != nil {
+				return fmt.Errorf("無法備份原始檔案 %s：%w", filename, err)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("無法檢查目標檔案 %s：%w", filename, err)
+	}
+
+	if err := writeFileAtomic(path, content, 0644); err != nil {
+		return fmt.Errorf("無法寫入 %s：%w", filename, err)
+	}
+	return nil
+}
+
+func writeBackupExclusive(path string, content []byte, mode os.FileMode) (retErr error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			_ = os.Remove(path)
+		}
+	}()
+
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if mode != 0 {
+		if err := os.Chmod(path, mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeFileAtomic(path string, content []byte, mode os.FileMode) (retErr error) {
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, ".unren-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+
+	if err := temp.Chmod(mode); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(content); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
 	return nil
 }
