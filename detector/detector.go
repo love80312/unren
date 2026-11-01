@@ -63,7 +63,7 @@ func DetectGame(dir string) (*GameInfo, error) {
 	} else {
 		// Try to find game/ in current directory
 		// Maybe we're in some other subdirectory
-		fmt.Printf("Detection: Failed to find game directory in %s\n", absDir)
+		fmt.Printf("偵測失敗：在以下位置找不到 game 資料夾：%s\n", absDir)
 		return nil, &GameNotFoundError{Dir: absDir}
 	}
 
@@ -147,5 +147,5 @@ type GameNotFoundError struct {
 }
 
 func (e *GameNotFoundError) Error() string {
-	return "could not detect Ren'Py game in directory: " + e.Dir
+	return "在以下目錄中找不到 Ren'Py 遊戲：" + e.Dir
 }
