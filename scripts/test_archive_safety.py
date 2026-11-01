@@ -20,7 +20,10 @@ def load_module(name, filename):
 
 
 rpatool = load_module("unren_rpatool_safety_test", "rpatool.py")
-rpatool_py2 = load_module("unren_rpatool_py2_safety_test", "rpatool_py2.py")
+# rpatool.py is the shared Python 2/3-compatible implementation. The old
+# rpatool_py2.py duplicate was removed, so keep the legacy test alias pointed
+# at the remaining source rather than trying to load a missing file.
+rpatool_py2 = rpatool
 rpa_fallback = load_module("unren_rpa_fallback_safety_test", "rpa.py")
 
 
@@ -152,6 +155,13 @@ class PickleSafetyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     module.safe_zlib_decompress(truncated)
 
+    def test_zlib_stream_with_trailing_data_is_rejected(self):
+        compressed = zlib.compress(b"complete index payload") + b"trailing-junk"
+        for module in (rpatool, rpatool_py2, rpa_fallback):
+            with self.subTest(module=module.__name__):
+                with self.assertRaises(ValueError):
+                    module.safe_zlib_decompress(compressed)
+
     def test_compressed_index_input_size_is_bounded(self):
         for module in (rpatool, rpatool_py2, rpa_fallback):
             original_limit = module.MAX_INDEX_COMPRESSED_BYTES
@@ -181,7 +191,7 @@ class OutputPathSafetyTests(unittest.TestCase):
         bad_paths = (
             "../outside.txt", "folder/../../outside.txt", "/tmp/outside.txt",
             "\\\\server\\share\\outside.txt", "C:\\outside.txt", "C:relative.txt",
-            "folder/.. /escape.txt", "NUL.txt",
+            "folder/.. /escape.txt", "NUL.txt", "NUL .txt", "name. ", "bad\x01name.txt",
         )
         for module in (rpatool, rpatool_py2, rpa_fallback):
             for name in bad_paths:
