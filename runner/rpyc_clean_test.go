@@ -76,3 +76,80 @@ func TestDecompileAllRPYCWithFilesReturnsNoCleanupCandidatesOnSetupError(t *test
 		t.Fatalf("setup failure must not produce cleanup candidates: %#v", succeededFiles)
 	}
 }
+
+func TestPythonBitnessUsesRenPyPlatformNames(t *testing.T) {
+	tests := []struct {
+		goos   string
+		goarch string
+		want   string
+	}{
+		{"windows", "amd64", "x86_64"},
+		{"windows", "386", "i686"},
+		{"windows", "arm64", "x86_64"},
+		{"linux", "arm64", "aarch64"},
+		{"linux", "arm", "armv7l"},
+		{"darwin", "arm64", "arm64"},
+	}
+	for _, test := range tests {
+		t.Run(test.goos+"/"+test.goarch, func(t *testing.T) {
+			if got := pythonBitness(test.goos, test.goarch); got != test.want {
+				t.Fatalf("pythonBitness(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
+			}
+		})
+	}
+}
+
+func TestNewRunnerRejectsNilGameInfo(t *testing.T) {
+	if _, err := NewRunner(nil); err == nil {
+		t.Fatal("NewRunner should reject nil game information")
+	}
+}
+
+func TestSetupUnrpycRejectsCallerSuppliedTempDir(t *testing.T) {
+	gameRoot := t.TempDir()
+	providedDir := t.TempDir()
+	marker := filepath.Join(providedDir, "keep.txt")
+	if err := os.WriteFile(marker, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{
+		GameInfo:  &detector.GameInfo{RootDir: gameRoot},
+		TempDir:   providedDir,
+		IsPython3: true,
+	}
+	if err := r.SetupUnrpyc(); err == nil {
+		t.Fatal("SetupUnrpyc should reject a caller-supplied temporary directory")
+	}
+	if _, err := os.Stat(filepath.Join(providedDir, "decompiler")); !os.IsNotExist(err) {
+		t.Fatalf("SetupUnrpyc wrote into an unowned directory: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("caller-owned directory contents were changed: %v", err)
+	}
+}
+
+func TestExtractRPARejectsCallerSuppliedTempDir(t *testing.T) {
+	gameRoot := t.TempDir()
+	providedDir := t.TempDir()
+	marker := filepath.Join(providedDir, "keep.txt")
+	if err := os.WriteFile(marker, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Runner{
+		GameInfo:  &detector.GameInfo{RootDir: gameRoot},
+		TempDir:   providedDir,
+		PythonExe: "unused",
+		IsPython3: true,
+	}
+	if err := r.ExtractRPA(filepath.Join(gameRoot, "game.rpa")); err == nil {
+		t.Fatal("ExtractRPA should reject a caller-supplied temporary directory")
+	}
+	if _, err := os.Stat(filepath.Join(providedDir, "_rpatool.py")); !os.IsNotExist(err) {
+		t.Fatalf("ExtractRPA wrote into an unowned directory: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("caller-owned directory contents were changed: %v", err)
+	}
+}

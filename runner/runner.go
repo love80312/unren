@@ -30,6 +30,10 @@ type Runner struct {
 
 // NewRunner creates a new runner for the detected game.
 func NewRunner(gameInfo *detector.GameInfo) (*Runner, error) {
+	if gameInfo == nil {
+		return nil, fmt.Errorf("尚未設定遊戲資訊")
+	}
+
 	r := &Runner{
 		GameInfo: gameInfo,
 	}
@@ -82,16 +86,16 @@ func (r *Runner) findPython() (string, string, bool, error) {
 		osPrefix = "linux"
 	}
 
-	bitness := "x86_64"
-	if runtime.GOARCH != "amd64" {
-		bitness = "i686"
-	}
+	bitness := pythonBitness(runtime.GOOS, runtime.GOARCH)
 
-	// Check for macOS App Bundle structure (Check unconditionally to support cross-OS inspection)
-	// Try resolving ../../MacOS/python from LibDir (Contents/Resources/lib -> Contents/MacOS)
-	macExePath := filepath.Join(filepath.Dir(filepath.Dir(libDir)), "MacOS", "python")
-	if _, err := os.Stat(macExePath); err == nil {
-		return macExePath, libDir, true, nil // Assuming Ren'Py 8/Python 3 for simplified mac structure
+	// Only select a Mac App Bundle interpreter when this binary is running
+	// on macOS. A Windows/Linux build cannot execute the bundled Mac binary.
+	if runtime.GOOS == "darwin" {
+		// Contents/Resources/lib -> Contents/MacOS/python.
+		macExePath := filepath.Join(filepath.Dir(filepath.Dir(libDir)), "MacOS", "python")
+		if _, err := os.Stat(macExePath); err == nil {
+			return macExePath, libDir, true, nil
+		}
 	}
 
 	// Try Python 3 paths first (Ren'Py 8)
@@ -130,6 +134,39 @@ func (r *Runner) findPython() (string, string, bool, error) {
 	}
 
 	return "", "", false, fmt.Errorf("在以下目錄中找不到 Python 執行檔：%s", libDir)
+}
+
+// pythonBitness maps the host OS/architecture to Ren'Py's platform suffixes.
+// Ren'Py uses Linux aarch64/armv7l, macOS arm64, and Windows x86_64/i686.
+func pythonBitness(goos, goarch string) string {
+	switch goarch {
+	case "amd64":
+		return "x86_64"
+	case "386":
+		return "i686"
+	}
+
+	switch goos {
+	case "linux":
+		switch goarch {
+		case "arm64":
+			return "aarch64"
+		case "arm":
+			return "armv7l"
+		}
+	case "darwin":
+		if goarch == "arm64" {
+			return "arm64"
+		}
+	case "windows":
+		if goarch == "arm64" {
+			// Ren'Py's Windows runtime is x86_64; Windows on ARM can run it
+			// through its x64 emulation layer.
+			return "x86_64"
+		}
+	}
+
+	return goarch
 }
 
 // getPythonExe returns the python executable path if it exists.
@@ -262,10 +299,11 @@ func (r *Runner) SetupTempDir() error {
 
 // SetupUnrpyc extracts the unrpyc decompiler.
 func (r *Runner) SetupUnrpyc() error {
-	if r.TempDir == "" {
-		if err := r.SetupTempDir(); err != nil {
-			return err
-		}
+	// Always validate ownership, even when TempDir was set by the caller.
+	// SetupTempDir is idempotent for this Runner's own directory and rejects
+	// caller-supplied paths to prevent writing into arbitrary directories.
+	if err := r.SetupTempDir(); err != nil {
+		return err
 	}
 
 	return files.ExtractUnrpyc(r.TempDir, r.IsPython3)
@@ -401,10 +439,9 @@ func runWithLocalizedOutput(cmd *exec.Cmd) ([]byte, error) {
 
 // ExtractRPA extracts an RPA archive using the embedded rpatool.
 func (r *Runner) ExtractRPA(rpaPath string) error {
-	if r.TempDir == "" {
-		if err := r.SetupTempDir(); err != nil {
-			return err
-		}
+	// Validate ownership even when TempDir was pre-populated by a caller.
+	if err := r.SetupTempDir(); err != nil {
+		return err
 	}
 
 	rpatoolPath := filepath.Join(r.TempDir, "_rpatool.py")
