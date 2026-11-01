@@ -106,6 +106,11 @@ def safe_zlib_decompress(data, limit=MAX_INDEX_BYTES):
         raise ValueError("decompressed RPA index exceeds the safety limit")
     chunks.append(tail)
 
+    # An RPA index is exactly one zlib stream. Reject trailing bytes and
+    # concatenated streams instead of silently accepting an ambiguous index.
+    if getattr(decoder, "unused_data", b""):
+        raise ValueError("trailing data after compressed RPA index")
+
     if hasattr(decoder, "eof"):
         if not decoder.eof:
             raise ValueError("truncated compressed RPA index")
@@ -148,9 +153,13 @@ def safe_output_path(root, archive_name):
             continue
         if part == ".." or part.rstrip(" .") in ("", ".", ".."):
             raise ValueError("parent-directory traversal is not allowed")
+        # Windows strips trailing spaces/dots and rejects control characters;
+        # reject them on every host to avoid cross-platform path aliases.
+        if part != part.rstrip(" .") or any(ord(char) < 32 for char in part):
+            raise ValueError("invalid trailing space, dot, or control character in archive path")
         if any(char in part for char in (":", "<", ">", '"', "|", "?", "*")):
             raise ValueError("invalid character in archive path component")
-        device_name = part.rstrip(" .").split(".", 1)[0].upper()
+        device_name = part.rstrip(" .").split(".", 1)[0].rstrip(" .").upper()
         if device_name in ("CON", "PRN", "AUX", "NUL") or re.match(r"^(COM|LPT)[1-9]$", device_name):
             raise ValueError("reserved device name in archive path")
         parts.append(part)
