@@ -13,7 +13,10 @@ import (
 //go:embed rpy/*.rpy rpy/*.tmpl
 var rpyFiles embed.FS
 
-//go:embed python/rpatool.py python/rpatool_py2.py python/rpa.py
+// rpatool.py is shared by the Python 2 and Python 3 runtime paths.
+// The former rpatool_py2.py was byte-for-byte identical and has been removed.
+//
+//go:embed python/rpatool.py python/rpa.py
 var rpaScripts embed.FS
 
 //go:embed python/unrpyc_py3/*
@@ -68,13 +71,11 @@ var RPYFiles = struct {
 	Rollback: "unren-rollback.rpy",
 }
 
-// GetRPATool returns the rpatool Python script content.
-// If python3 is true, returns the Python 3 version; otherwise Python 2.
-func GetRPATool(python3 bool) ([]byte, error) {
-	if python3 {
-		return rpaScripts.ReadFile("python/rpatool.py")
-	}
-	return rpaScripts.ReadFile("python/rpatool_py2.py")
+// GetRPATool returns the shared rpatool Python script content.
+// The python3 argument is retained for API compatibility. The Python 2 and
+// Python 3 copies were identical, so both runtime paths use python/rpatool.py.
+func GetRPATool(_ bool) ([]byte, error) {
+	return rpaScripts.ReadFile("python/rpatool.py")
 }
 
 // GetRPAFallback returns the simple rpa.py fallback extractor.
