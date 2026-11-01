@@ -48,7 +48,7 @@ func New(gameDir string, config *Config) *Patcher {
 func (p *Patcher) EnableConsole() error {
 	content, err := files.GetRPYContent(files.RPYFiles.Dev)
 	if err != nil {
-		return fmt.Errorf("failed to load dev template: %w", err)
+		return fmt.Errorf("無法載入開發者主控台範本：%w", err)
 	}
 	return p.writeFile("unren-dev.rpy", content)
 }
@@ -62,7 +62,7 @@ func (p *Patcher) EnableQuickSave() error {
 
 	content, err := files.GetRPYTemplated(files.RPYFiles.Quick, data)
 	if err != nil {
-		return fmt.Errorf("failed to process quick save template: %w", err)
+		return fmt.Errorf("無法處理快速存檔範本：%w", err)
 	}
 
 	return p.writeFile("unren-quick.rpy", content)
@@ -72,7 +72,7 @@ func (p *Patcher) EnableQuickSave() error {
 func (p *Patcher) EnableSkip() error {
 	content, err := files.GetRPYContent(files.RPYFiles.Skip)
 	if err != nil {
-		return fmt.Errorf("failed to load skip template: %w", err)
+		return fmt.Errorf("無法載入略過功能範本：%w", err)
 	}
 	return p.writeFile("unren-skip.rpy", content)
 }
@@ -81,7 +81,7 @@ func (p *Patcher) EnableSkip() error {
 func (p *Patcher) EnableRollback() error {
 	content, err := files.GetRPYContent(files.RPYFiles.Rollback)
 	if err != nil {
-		return fmt.Errorf("failed to load rollback template: %w", err)
+		return fmt.Errorf("無法載入回滾功能範本：%w", err)
 	}
 	return p.writeFile("unren-rollback.rpy", content)
 }
@@ -89,16 +89,16 @@ func (p *Patcher) EnableRollback() error {
 // EnableAll enables all patching features (console, quick save, skip, rollback).
 func (p *Patcher) EnableAll() error {
 	if err := p.EnableConsole(); err != nil {
-		return fmt.Errorf("console: %w", err)
+		return fmt.Errorf("開發者主控台：%w", err)
 	}
 	if err := p.EnableQuickSave(); err != nil {
-		return fmt.Errorf("quick save: %w", err)
+		return fmt.Errorf("快速存檔：%w", err)
 	}
 	if err := p.EnableSkip(); err != nil {
-		return fmt.Errorf("skip: %w", err)
+		return fmt.Errorf("略過功能：%w", err)
 	}
 	if err := p.EnableRollback(); err != nil {
-		return fmt.Errorf("rollback: %w", err)
+		return fmt.Errorf("回滾功能：%w", err)
 	}
 	return nil
 }
@@ -127,7 +127,7 @@ func (p *Patcher) RemoveAll() error {
 // removeIfExists removes a file if it exists, ignoring "not found" errors.
 func (p *Patcher) removeIfExists(path string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove %s: %w", filepath.Base(path), err)
+		return fmt.Errorf("無法刪除 %s：%w", filepath.Base(path), err)
 	}
 	return nil
 }
@@ -141,7 +141,7 @@ func (p *Patcher) writeFile(filename string, content []byte) error {
 	_ = p.removeIfExists(path)
 
 	if err := os.WriteFile(path, content, 0644); err != nil {
-		return fmt.Errorf("failed to write %s: %w", filename, err)
+		return fmt.Errorf("無法寫入 %s：%w", filename, err)
 	}
 
 	return nil
