@@ -372,7 +372,7 @@ func handleDecompileRPYC(game *detector.GameInfo, clean bool) {
 	fmt.Println("  搜尋 rpyc 檔案中...")
 	fmt.Println()
 
-	success, skipped, failed, err := r.DecompileAllRPYC()
+	success, skipped, failed, succeededFiles, err := r.DecompileAllRPYCWithFiles()
 	if err != nil {
 		fmt.Printf("    ! 反編譯錯誤：%v\n", err)
 	}
@@ -401,11 +401,13 @@ func handleDecompileRPYC(game *detector.GameInfo, clean bool) {
 		fmt.Println()
 	}
 
-	if clean && failed == 0 {
+	if clean && err == nil && failed == 0 {
 		fmt.Println()
 		fmt.Println("  清理 RPYC 檔案中...")
 		cleaned := 0
-		for _, rpycPath := range game.RPYCFiles {
+		// Only delete sources that this run actually decompiled successfully.
+		// Keep skipped files, un.rpyc, and every failed/unprocessed source.
+		for _, rpycPath := range succeededFiles {
 			if err := os.Remove(rpycPath); err == nil {
 				cleaned++
 			} else {
@@ -413,9 +415,13 @@ func handleDecompileRPYC(game *detector.GameInfo, clean bool) {
 			}
 		}
 		fmt.Printf("    已刪除 %d 個 .rpyc 檔案。\n", cleaned)
-	} else if clean && failed > 0 {
+	} else if clean {
 		fmt.Println()
-		fmt.Printf("  ! 因有 %d 個檔案反編譯失敗，略過清理步驟。\n", failed)
+		if failed > 0 {
+			fmt.Printf("  ! 因有 %d 個檔案反編譯失敗，略過清理步驟。\n", failed)
+		} else {
+			fmt.Println("  ! 因反編譯流程發生錯誤，略過清理步驟。")
+		}
 	}
 }
 
